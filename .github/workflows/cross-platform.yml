@@ -41,6 +41,10 @@ jobs:
         run: python -m pip install -r requirements-watermark.txt
       - name: Run platform-independent smoke tests
         run: python -m unittest discover -s tests -p test_cross_platform.py -v
+      - name: Real FFmpeg end-to-end export and cache checks
+        run: python -m unittest discover -s tests -p test_end_to_end_platform.py -v
+      - name: Mocked LaMa worker and quiet logs (all platforms)
+        run: python -m unittest discover -s tests -p test_quiet_console.py -v
       - name: CLI help
         run: python lofi_maker.py --help
       - name: Full legacy suite (POSIX only)
