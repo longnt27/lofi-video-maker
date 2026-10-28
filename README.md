@@ -88,53 +88,62 @@ python lofi_maker.py --video data/video.mp4 --music data/musics --output preview
 
 If that produces `preview.mp4`, test the particle transition with `--preview 125` **and remove `--no-dust`**. The first minute is clean, the second has drifting dust. The first export may be slower because reusable clips are being encoded.
 
-## Seamless layered loop (optional)
+## Seamless loop: the CapCut three-clip method (optional)
 
-A normal repeat jumps straight from the last frame back to the first. For
-footage whose endpoints differ, enable **two-layer loop blending**:
+A plain repeat jumps from the source's last frame to its first. This mode
+follows the [CapCut PC loop tutorial](https://www.youtube.com/watch?v=UzjWa7-IMo0):
+**duplicate the clip, overlap the duplicate with an opacity fade, then move
+the original opening fragment to the end with a second opacity fade**.
+The three placements form a compound clip:
 
-- Layer A plays the original animation starting after the overlap.
-- Layer B overlays the start of that animation on the final part of layer A.
-- FFmpeg crossfades the two layers. At the wrap point, the end of B is
-  adjacent to the beginning of A in the original animation.
-- The combined cycle is very slightly retimed to keep each clean/dust
-  **60-second section** phase-aligned, avoiding a second jump at section
-  boundaries. This retiming is applied once to the short clip, not to the
-  final hour-long export.
+```text
+Clip A: original[D..end]      |----------------|
+Clip B: original[0..end]                |-----------------------|
+Clip C: original[0..D]                                     |----|
+                                 fade A -> B         fade B -> C
+compound starts at frame D; compound ends at frame D-1 (then repeats)
+```
 
-Try the setting on a **short preview** before exporting a whole mix:
+The last frame of the compound is source frame D-1, followed by source
+frame D when the compound repeats. **That wrap is a natural consecutive-frame
+boundary**, unlike a hard end-to-beginning cut. FFmpeg implements the two
+opacity keyframes using two `xfade` filters. It renders the short compound
+once, then reuses it for the long video. **There is no playback-speed retiming.**
+
+Start by previewing the result:
 
 **macOS:**
 
 ```bash
-python lofi_maker.py --video data/video.mp4 --music data/musics --output seamless_preview.mp4 --seamless-loop --loop-overlap 0.8 --preview 125 --cache-dir ./cache --codec h264
+python lofi_maker.py --video data/video.mp4 --music data/musics --output seamless_preview.mp4 --seamless-loop --loop-overlap 3 --preview 125 --cache-dir ./cache --codec h264
 ```
 
 **Windows PowerShell:**
 
 ```powershell
-.\.venv\Scripts\python.exe lofi_maker.py --video data/video.mp4 --music data/musics --output seamless_preview.mp4 --seamless-loop --loop-overlap 0.8 --preview 125 --cache-dir ./cache --codec h264
+.\.venv\Scripts\python.exe lofi_maker.py --video data/video.mp4 --music data/musics --output seamless_preview.mp4 --seamless-loop --loop-overlap 3 --preview 125 --cache-dir ./cache --codec h264
 ```
 
-The original hard-loop behavior remains the default for backward compatibility.
-Omit `--seamless-loop` to turn this feature off. The layered master is
-cached and reused for later mixes with the same source and settings. Use
-`--prepare-only seamless_master.mp4 --seamless-loop` to inspect
-the short generated cycle without adding music.
+The default overlap is **3 seconds**, matching the tutorial's example.
+Use a shorter overlap on a short clip (the input must be more than twice as
+long as the overlap). The original hard-loop behavior is unchanged unless
+`--seamless-loop` is supplied. To inspect only the short compound, run with
+`--prepare-only seamless_master.mp4 --seamless-loop`.
 
-A good starting overlap for a 10-second background is **0.5–0.8 seconds**.
-Longer overlaps hide more drastic endpoint changes but introduce more
-double-exposure/ghosting and greater motion slowdown. This is a *temporal
-crossfade between two video layers*, **not** object-aware segmentation into
-independent foreground and background layers. Scene motion can still look
-unnatural when the original first and last frames are unrelated. For the
-smoothest result, use a near-looping source animation.
+**Clean/dust section alignment:** Both halves of the compound share a
+cycle of `source_length - overlap_length`. To prevent a new jump every
+60 seconds when clean/dust clips restart, the tool may slightly adjust
+the *overlap length* (not playback speed) so that cycle divides each
+`--section-seconds` interval exactly. For instance, a 10-second
+30fps source and 60-second sections can use an overlap of 3.33 seconds
+instead of 3.0. If no sufficiently close overlap exists, it stops and
+suggests changing `--loop-overlap`, `--section-seconds`, or using
+`--no-dust`. This avoids silently inserting a new seam.
 
-The clip must be long enough for two non-overlapping tails and the selected
-overlap. Dust sections also require a loop period close enough to divide
-the selected `--section-seconds` exactly (within a 15% time
-adjustment). If the source cannot be aligned, the tool fails with actionable
-guidance rather than exporting a new 60-second jump.
+This creates **three temporal clip placements with two crossfades**, not
+separately tracked foreground/background layers. If the beginning and ending
+show very different poses, the overlap can have ghosting; no generic
+compositing method can reconstruct movement that isn't in the source.
 
 ## Full mix
 
@@ -212,8 +221,8 @@ To use LaMa and AI upscale together, add `--watermark-box X,Y,W,H --upscale 2 --
 |---|---|
 | `--preview 125` | Export only the first 125 seconds, including the first dust minute |
 | `--no-dust` | Disable particles |
-| `--seamless-loop` | Blend two offset temporal layers instead of a hard frame cut (off by default) |
-| `--loop-overlap 0.8` | Layer crossfade length in seconds; requires `--seamless-loop` |
+| `--seamless-loop` | Create a CapCut-style three-placement compound with two opacity fades (off by default) |
+| `--loop-overlap 3` | Requested seconds of each opacity fade; may adjust slightly to align dust sections |
 | `--dust-count 65` | Number of drifting particles |
 | `--dust-variants 10` | Number of reusable dusty sections |
 | `--section-seconds 60` | Duration of each clean/dust section |
@@ -243,7 +252,7 @@ Only human-readable stages and progress milestones appear in the terminal. Detai
 - **NCNN executable/model not found:** on Windows check for `.exe`, and provide `--realesrgan-bin` plus `--realesrgan-model-dir`. On macOS check executable permissions.
 - **AI upscale fails on GPU:** ensure the correct Vulkan-capable binary/driver and matching models, or use `--upscale-engine lanczos`.
 - **Temporary files fill the disk:** lower resolution or export a preview first; the 4K frame extraction can require substantial scratch space.
-- **Video jumps between loops:** enable `--seamless-loop --loop-overlap 0.8`. The loop phase is aligned across 60-second sections. For strong scene changes, expect ghosting during the overlap; try a shorter overlap or a more compatible source clip.
+- **Video jumps between loops:** enable `--seamless-loop --loop-overlap 3`. The CapCut-style compound uses two opacity fades and preserves playback speed. Dust-section phase is aligned where possible. If the fades show double-exposed motion, try a shorter overlap or a more compatible source clip.
 - **Windows symlink permissions:** recent versions use hard links with a copy fallback; Developer Mode is not required for video assembly.
 
 ## Develop and test
