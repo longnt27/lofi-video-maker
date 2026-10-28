@@ -58,7 +58,9 @@ def _aligned_overlap_frames(source_frames: int, section_frames: int,
             f'to a {section_frames}-frame clean/dust section. '
             'Change --section-seconds or disable dust.'
         )
-    result = min(candidates, key=lambda d: (abs(d-requested_overlap_frames), d))
+    # Prefer a longer fade when two choices are equally close; it better
+    # masks a visible source-endpoint discontinuity.
+    result = min(candidates, key=lambda d: (abs(d-requested_overlap_frames), -d))
     # Small automatic adjustment is fine (e.g. 3s -> 3.33s); a radical
     # change would misrepresent the user's selected blend duration.
     allowed_difference = max(2, math.ceil(requested_overlap_frames * 0.35))
