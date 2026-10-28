@@ -88,6 +88,54 @@ python lofi_maker.py --video data/video.mp4 --music data/musics --output preview
 
 If that produces `preview.mp4`, test the particle transition with `--preview 125` **and remove `--no-dust`**. The first minute is clean, the second has drifting dust. The first export may be slower because reusable clips are being encoded.
 
+## Seamless layered loop (optional)
+
+A normal repeat jumps straight from the last frame back to the first. For
+footage whose endpoints differ, enable **two-layer loop blending**:
+
+- Layer A plays the original animation starting after the overlap.
+- Layer B overlays the start of that animation on the final part of layer A.
+- FFmpeg crossfades the two layers. At the wrap point, the end of B is
+  adjacent to the beginning of A in the original animation.
+- The combined cycle is very slightly retimed to keep each clean/dust
+  **60-second section** phase-aligned, avoiding a second jump at section
+  boundaries. This retiming is applied once to the short clip, not to the
+  final hour-long export.
+
+Try the setting on a **short preview** before exporting a whole mix:
+
+**macOS:**
+
+```bash
+python lofi_maker.py --video data/video.mp4 --music data/musics --output seamless_preview.mp4 --seamless-loop --loop-overlap 0.8 --preview 125 --cache-dir ./cache --codec h264
+```
+
+**Windows PowerShell:**
+
+```powershell
+.\.venv\Scripts\python.exe lofi_maker.py --video data/video.mp4 --music data/musics --output seamless_preview.mp4 --seamless-loop --loop-overlap 0.8 --preview 125 --cache-dir ./cache --codec h264
+```
+
+The original hard-loop behavior remains the default for backward compatibility.
+Omit `--seamless-loop` to turn this feature off. The layered master is
+cached and reused for later mixes with the same source and settings. Use
+`--prepare-only seamless_master.mp4 --seamless-loop` to inspect
+the short generated cycle without adding music.
+
+A good starting overlap for a 10-second background is **0.5–0.8 seconds**.
+Longer overlaps hide more drastic endpoint changes but introduce more
+double-exposure/ghosting and greater motion slowdown. This is a *temporal
+crossfade between two video layers*, **not** object-aware segmentation into
+independent foreground and background layers. Scene motion can still look
+unnatural when the original first and last frames are unrelated. For the
+smoothest result, use a near-looping source animation.
+
+The clip must be long enough for two non-overlapping tails and the selected
+overlap. Dust sections also require a loop period close enough to divide
+the selected `--section-seconds` exactly (within a 15% time
+adjustment). If the source cannot be aligned, the tool fails with actionable
+guidance rather than exporting a new 60-second jump.
+
 ## Full mix
 
 The following works in **macOS and Windows PowerShell** when the environment is active (use `.\.venv\Scripts\python.exe` instead of `python` on Windows if not activated):
@@ -164,6 +212,8 @@ To use LaMa and AI upscale together, add `--watermark-box X,Y,W,H --upscale 2 --
 |---|---|
 | `--preview 125` | Export only the first 125 seconds, including the first dust minute |
 | `--no-dust` | Disable particles |
+| `--seamless-loop` | Blend two offset temporal layers instead of a hard frame cut (off by default) |
+| `--loop-overlap 0.8` | Layer crossfade length in seconds; requires `--seamless-loop` |
 | `--dust-count 65` | Number of drifting particles |
 | `--dust-variants 10` | Number of reusable dusty sections |
 | `--section-seconds 60` | Duration of each clean/dust section |
@@ -193,7 +243,7 @@ Only human-readable stages and progress milestones appear in the terminal. Detai
 - **NCNN executable/model not found:** on Windows check for `.exe`, and provide `--realesrgan-bin` plus `--realesrgan-model-dir`. On macOS check executable permissions.
 - **AI upscale fails on GPU:** ensure the correct Vulkan-capable binary/driver and matching models, or use `--upscale-engine lanczos`.
 - **Temporary files fill the disk:** lower resolution or export a preview first; the 4K frame extraction can require substantial scratch space.
-- **Video jumps between loops:** the source animation itself must be seamless.
+- **Video jumps between loops:** enable `--seamless-loop --loop-overlap 0.8`. The loop phase is aligned across 60-second sections. For strong scene changes, expect ghosting during the overlap; try a shorter overlap or a more compatible source clip.
 - **Windows symlink permissions:** recent versions use hard links with a copy fallback; Developer Mode is not required for video assembly.
 
 ## Develop and test
