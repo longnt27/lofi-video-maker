@@ -15,7 +15,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from seamless_loop import _period_frames, prepare_seamless_master
+from seamless_loop import _aligned_overlap_frames, prepare_seamless_master
 
 
 def run(args: list[str], *, binary: bool = False):
@@ -39,14 +39,15 @@ def mean_difference(a: bytes, b: bytes) -> float:
 
 
 class LoopTimingTests(unittest.TestCase):
-    def test_section_aligned_period(self):
-        self.assertEqual(_period_frames(300, 1800), 300)
-        self.assertEqual(_period_frames(298, 1800), 300)
-        self.assertEqual(_period_frames(12, 24), 12)
+    def test_overlap_near_three_seconds_aligns_without_speed_change(self):
+        # 10s at 30fps + 60s sections. A 3s fade is nudged to 3.33s
+        # so the 6.67s underlying cycle divides 60s exactly.
+        self.assertEqual(_aligned_overlap_frames(300, 1800, 90), 100)
+        self.assertEqual(_aligned_overlap_frames(12, 24, 2), 4)
 
-    def test_unreasonable_timing_adjustment_fails(self):
-        with self.assertRaisesRegex(ValueError, "Cannot align"):
-            _period_frames(50, 24)
+    def test_unreasonable_overlap_adjustment_fails(self):
+        with self.assertRaisesRegex(ValueError, "Nearest aligned overlap"):
+            _aligned_overlap_frames(300, 1800, 24)
 
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
@@ -75,12 +76,25 @@ class LayeredLoopTests(unittest.TestCase):
             align_sections=True, cache=self.cache, work=self.root)
         original = gray_frames(source, width, height)
         blended = gray_frames(master, width, height)
-        self.assertEqual(len(blended), 90)
-        self.assertEqual(1800 % len(blended), 0)
+        # Compound has two cycles. No frame-rate retiming: the first frame
+        # is the source frame where the first 1-second fragment was cut.
+        self.assertEqual(len(blended), 120)
+        period = len(blended) // 2
+        self.assertEqual(1800 % period, 0)
         hard_jump = mean_difference(original[-1], original[0])
         soft_jump = mean_difference(blended[-1], blended[0])
+        internal_join = mean_difference(blended[period-1], blended[period])
+        phase_match = mean_difference(blended[0], blended[period])
         self.assertGreater(hard_jump, 100)
         self.assertLess(soft_jump, hard_jump / 4)
+        self.assertLess(internal_join, hard_jump / 4)
+        self.assertLess(phase_match, hard_jump / 4)
+        self.assertLess(mean_difference(original[30], blended[0]), 12)
+        metadata = json.loads((master.parent / "metadata.json").read_text())
+        self.assertEqual(metadata["overlap_frames"], 30)
+        self.assertEqual(metadata["period_frames"], 60)
+        self.assertEqual(metadata["master_frames"], 120)
+        self.assertIn("no-retiming", metadata["method"])
         before_mtime = master.stat().st_mtime_ns
         again = prepare_seamless_master(
             source, fps=fps, overlap=0.8, section_seconds=60,
@@ -109,7 +123,7 @@ class LayeredLoopTests(unittest.TestCase):
                 "--dust-fps", "6", "--dust-fade", ".2",
                 "--seamless-loop", "--loop-overlap", "0.10"]
         first = run(args)
-        self.assertIn("Seamless loop: blend", first.stdout)
+        self.assertIn("three clip layers, two", first.stdout)
         self.assertIn("[4/4] Assemble final MP4", first.stdout)
         info = json.loads(run(["ffprobe", "-v", "error", "-show_streams",
                                "-show_format", "-of", "json", str(output)]).stdout)
@@ -133,7 +147,7 @@ class LayeredLoopTests(unittest.TestCase):
                    "--video", str(source), "--prepare-only", str(result),
                    "--seamless-loop", "--loop-overlap", "0.10",
                    "--cache-dir", str(self.cache), "--fps", "24"])
-        self.assertIn("Seamless loop: blend", cli.stdout)
+        self.assertIn("three clip layers, two", cli.stdout)
         self.assertTrue(result.is_file() and result.stat().st_size > 1000)
 
 
