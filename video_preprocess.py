@@ -28,7 +28,7 @@ import pipeline_status as status
 
 PREPROCESS_VERSION = "preprocess-v3.2-quiet-stages-lama-provider"
 LAMA_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
-NCNN_NAME = "realesrgan-ncnn-vulkan"
+NCNN_NAME = "realesrgan-ncnn-vulkan.exe" if os.name == "nt" else "realesrgan-ncnn-vulkan"
 
 
 @dataclass(frozen=True)
@@ -485,13 +485,14 @@ def find_existing_upscaler(
         raise FileNotFoundError(
             f"Existing {NCNN_NAME} not found ({location}). "
             "Point --realesrgan-root at the OTHER project containing bin/, "
-            "or use --realesrgan-bin /full/path/to/realesrgan-ncnn-vulkan. "
+            "or use --realesrgan-bin with the full executable path. "
             "No download was attempted."
         )
     if not os.access(resolved_bin, os.X_OK):
+        hint = ("Verify the .exe and filesystem permissions on Windows."
+                if os.name == "nt" else f"Try: chmod +x '{resolved_bin}'")
         raise PermissionError(
-            f"NCNN executable is not runnable: {resolved_bin}. "
-            f"Try: chmod +x '{resolved_bin}'"
+            f"NCNN executable is not runnable: {resolved_bin}. {hint}"
         )
 
     if model_dir is not None:
