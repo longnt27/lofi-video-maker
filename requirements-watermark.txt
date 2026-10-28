@@ -1,0 +1,4 @@
+# Only needed when using --watermark-box or --pick-watermark
+opencv-python>=4.8
+numpy>=1.24
+onnxruntime>=1.20
