@@ -548,8 +548,8 @@ def main() -> None:
     p.add_argument("--no-dust", action="store_true", help="Disable dust and use plain looping")
     p.add_argument("--seamless-loop", action="store_true",
                    help="Prebuild a two-layer crossfade loop without a hard frame jump")
-    p.add_argument("--loop-overlap", type=float, default=0.8,
-                   help="Seconds of layered overlap at each loop seam (default: 0.8)")
+    p.add_argument("--loop-overlap", type=float, default=3.0,
+                   help="Seconds of each CapCut-style opacity crossfade (default: 3.0)")
     p.add_argument("--mode", choices=["fast", "full"], default="fast",
                    help="With --no-dust: fast (copy loops) or full (encode everything)")
     p.add_argument("--section-seconds", type=float, default=60.0,
