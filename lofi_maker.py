@@ -359,6 +359,18 @@ def encode_edge(source: Path, dest: Path, frames: int, fps: int,
          "-frames:v", str(frames), *encoder_opts, str(dest)])
 
 
+def link_or_copy_clip(source: Path, destination: Path) -> None:
+    """Create a local concat alias without requiring symlink privileges on Windows.
+
+    Hard links are quick and space-efficient on the same filesystem. A copy is
+    used for cross-drive caches, network filesystems, and other link failures.
+    """
+    try:
+        os.link(source.resolve(), destination)
+    except OSError:
+        shutil.copy2(source, destination)
+
+
 def assemble_video_and_audio(sections: list[Path], audio: Path, dest: Path,
                              duration: float, global_fade: float, work: Path) -> None:
     """Concat via stream copy, then AAC-encode the music with global fades."""
@@ -368,7 +380,7 @@ def assemble_video_and_audio(sections: list[Path], audio: Path, dest: Path,
             alias = f"part_{len(aliases):03d}.mp4"
             alias_path = work / alias
             if alias_path != p:
-                alias_path.symlink_to(p.resolve())
+                link_or_copy_clip(p, alias_path)
             aliases[p] = alias
     concat_file = work / "timeline.ffconcat"
     concat_file.write_text("ffconcat version 1.0\n" +
@@ -404,9 +416,9 @@ def reusable_clip_valid(path: Path, expected_duration: float, fps: int) -> bool:
 
 def make_pair_input(first: Path, second: Path, work: Path) -> Path:
     """Join the last two minute clips without decoding, for a continuous end fade."""
-    # Named symlinks keep ffconcat valid even if the source paths contain quotes.
+    # Local aliases avoid ffconcat path-escaping issues and Windows symlink privileges.
     for idx, source in enumerate((first, second)):
-        (work / f"last_pair_{idx}.mp4").symlink_to(source.resolve())
+        link_or_copy_clip(source, work / f"last_pair_{idx}.mp4")
     manifest = work / "last_pair.ffconcat"
     manifest.write_text("ffconcat version 1.0\n"
                         "file 'last_pair_0.mp4'\n"
@@ -616,7 +628,7 @@ def main() -> None:
 
     for exe in ("ffmpeg", "ffprobe"):
         if not shutil.which(exe):
-            p.error(f"{exe} not found. On macOS: brew install ffmpeg")
+            p.error(f"{exe} not found on PATH. Install FFmpeg (e.g. brew on macOS, winget on Windows) and restart your terminal.")
     if opts.video is None:
         p.error("--video is required unless --check-upscaler is used")
     if not opts.video.is_file():
