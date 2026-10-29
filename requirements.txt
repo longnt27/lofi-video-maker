@@ -1,8 +1,9 @@
 # One install for preprocessing, Studio, Chrome automation and project tests.
 numpy>=1.24
 opencv-python>=4.8
+# Pin the CUDA 12 build and install its CUDA/cuDNN DLLs, including on a clean venv.
 # The GPU wheel also contains CPUExecutionProvider. Install exactly one wheel.
-onnxruntime-gpu>=1.21; sys_platform == "win32" or sys_platform == "linux"
+onnxruntime-gpu[cuda,cudnn]==1.26.0; sys_platform == "win32" or sys_platform == "linux"
 onnxruntime>=1.21; sys_platform != "win32" and sys_platform != "linux"
 gradio>=6.14,<7
 gradio-image-annotation==0.5.6

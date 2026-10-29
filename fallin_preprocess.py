@@ -6,9 +6,12 @@ Only the final short clip is encoded; there are no intermediate MP4s.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import math
+import os
 import subprocess
+import sys
 import tempfile
 import urllib.request
 from fractions import Fraction
@@ -94,11 +97,28 @@ class FrameProcessor:
         self.model_dir, self.variant, self.tile = Path(model_dir), variant, tile
         self.lama_path = Path(lama_path) if lama_path else None
         self.sessions = {}
+        self.preload_error = None
+        self._dll_handles = []
         if hasattr(ort, "preload_dlls") and device != "cpu":
             try:
-                ort.preload_dlls()
-            except (RuntimeError, OSError):
-                pass
+                # cuDNN loads additional engine DLLs lazily during inference.
+                # Preloading cudnn64 alone does not expose those sibling DLLs.
+                if sys.platform == "win32":
+                    spec = importlib.util.find_spec("nvidia")
+                    roots = spec.submodule_search_locations if spec else []
+                    bins = [str(p.resolve()) for root in roots or []
+                            for p in Path(root).glob("*/bin") if p.is_dir()]
+                    current = os.environ.get("PATH", "").split(os.pathsep)
+                    additions = [p for p in bins if p not in current]
+                    if additions:
+                        os.environ["PATH"] = os.pathsep.join(additions+current)
+                    if hasattr(os, "add_dll_directory"):
+                        self._dll_handles = [os.add_dll_directory(p) for p in bins]
+                # Prefer the runtime packages installed by requirements.txt,
+                # not a different CUDA version from another app or global PATH.
+                ort.preload_dlls(directory="")
+            except (RuntimeError, OSError) as exc:
+                self.preload_error = str(exc)
         available = ort.get_available_providers()
         self.device = ("cuda" if "CUDAExecutionProvider" in available else "cpu") if device == "auto" else device
         if self.device == "cuda" and "CUDAExecutionProvider" not in available:
@@ -140,7 +160,13 @@ class FrameProcessor:
             sess = self.ort.InferenceSession(str(self.weight(kind)), sess_options=options, providers=providers)
             sess.disable_fallback()
             if self.device == "cuda" and "CUDAExecutionProvider" not in sess.get_providers():
-                raise RuntimeError("ONNX session failed to initialize CUDA; refusing silent CPU fallback")
+                extra = f" Preload error: {self.preload_error}" if self.preload_error else ""
+                raise RuntimeError(
+                    f"ONNX Runtime {self.ort.__version__} could not initialize CUDA. "
+                    f"Python: {sys.executable}. Install the pinned CUDA/cuDNN runtime with "
+                    f'"{sys.executable}" -m pip install -r requirements.txt, '
+                    "then restart LoFi Studio. Select --device cpu for a CPU-only run."
+                    + extra)
             self.sessions[kind] = sess
         return self.sessions[kind]
 

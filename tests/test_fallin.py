@@ -114,6 +114,49 @@ class StreamingTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Invalid Fallin"):
                 self.processor.infer(self.np.zeros((16, 16, 3), self.np.uint8))
 
+    def test_cuda_preloads_packaged_libraries_and_reports_exact_python(self):
+        from unittest.mock import Mock
+        import sys
+        runtime = types.ModuleType("onnxruntime")
+        runtime.__version__ = "test-version"
+        runtime.preload_dlls = Mock()
+        runtime.get_available_providers = lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        session = Mock()
+        session.get_providers.return_value = ["CPUExecutionProvider"]
+        runtime.SessionOptions = Mock()
+        runtime.InferenceSession = Mock(return_value=session)
+        with patch.dict(sys.modules, {"onnxruntime": runtime}):
+            processor = fallin.FrameProcessor(self.root, device="cuda")
+            runtime.preload_dlls.assert_called_once_with(directory="")
+            with patch.object(processor, "weight", return_value=self.root/"fake.onnx"):
+                with self.assertRaises(RuntimeError) as error:
+                    processor.session("fallin")
+        self.assertIn(sys.executable, str(error.exception))
+        self.assertIn("requirements.txt", str(error.exception))
+        self.assertIn("restart LoFi Studio", str(error.exception))
+        self.assertNotIn("fallin", processor.sessions)
+
+    def test_windows_exposes_cudnn_engine_directory_for_lazy_loading(self):
+        from unittest.mock import Mock
+        import sys
+        import os
+        root = self.root/"nvidia"
+        dll_dir = root/"cudnn"/"bin"
+        dll_dir.mkdir(parents=True)
+        runtime = types.ModuleType("onnxruntime")
+        runtime.preload_dlls = Mock()
+        runtime.get_available_providers = lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        handle = Mock()
+        with patch.dict(sys.modules, {"onnxruntime": runtime}), \
+             patch.object(fallin.sys, "platform", "win32"), \
+             patch.object(fallin.importlib.util, "find_spec", return_value=types.SimpleNamespace(submodule_search_locations=[str(root)])), \
+             patch.object(fallin.os, "add_dll_directory", return_value=handle, create=True) as add_dll, \
+             patch.dict(os.environ, {"PATH": "original-path"}):
+            processor = fallin.FrameProcessor(self.root, device="cuda")
+            self.assertEqual(processor._dll_handles, [handle])
+            add_dll.assert_called_once_with(str(dll_dir.resolve()))
+            self.assertEqual(os.environ["PATH"].split(os.pathsep)[0], str(dll_dir.resolve()))
+
     def test_cache_reuses_inference_and_invalidates_settings(self):
         weight = self.root/"model.onnx"
         weight.write_bytes(b"mock model")

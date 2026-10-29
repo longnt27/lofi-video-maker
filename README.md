@@ -234,7 +234,10 @@ dependencies. Windows/Linux use the ONNX GPU wheel, which also supports
 Runtime wheels into the same environment.
 
 GPU inference requires CUDA and cuDNN runtime libraries compatible with the
-installed `onnxruntime-gpu` build. A graphics driver alone is not sufficient.
+installed `onnxruntime-gpu` build. The unified requirements pin ONNX Runtime
+1.26.0 (CUDA 12) and install its CUDA/cuDNN runtime packages, so a clean venv
+does not depend on another application's DLLs. Restart Studio after installing
+or changing native libraries. A compatible NVIDIA graphics driver is still required.
 See the [ONNX Runtime CUDA compatibility table](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html).
 `--fallin-device cuda` fails clearly if a CUDA session cannot initialize;
 `auto` selects CUDA when advertised by ONNX Runtime, otherwise CPU. CPU uses
