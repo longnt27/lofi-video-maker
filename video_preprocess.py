@@ -93,7 +93,7 @@ def extract_first_frame(video: Path):
     try:
         import cv2
     except ImportError as exc:
-        raise RuntimeError("Watermark removal requires: pip install opencv-python numpy onnxruntime") from exc
+        raise RuntimeError("Watermark removal requires: python -m pip install -r requirements.txt") from exc
     cap = cv2.VideoCapture(str(video))
     try:
         ok, frame = cap.read()
@@ -191,7 +191,7 @@ def make_inpainter(model_path: Path, provider: str = "cpu"):
         import cv2
         import numpy as np
     except ImportError as exc:
-        raise RuntimeError("LaMa dependencies missing. Run: python -m pip install -r requirements-watermark.txt") from exc
+        raise RuntimeError("LaMa dependencies missing. Run: python -m pip install -r requirements.txt") from exc
     if hasattr(ort, "set_default_logger_severity"):
         ort.set_default_logger_severity(3)
     providers = selected_lama_providers(ort.get_available_providers(), provider)
@@ -226,7 +226,7 @@ def inpaint_video(input_path: Path, output_path: Path, box: tuple[int, int, int,
         import cv2
         import numpy as np
     except ImportError as exc:
-        raise RuntimeError("Watermark removal requires: pip install opencv-python numpy onnxruntime") from exc
+        raise RuntimeError("Watermark removal requires: python -m pip install -r requirements.txt") from exc
     info = video_info(input_path)
     wvideo, hvideo = info["width"], info["height"]
     total_frames = info["frames"] or round(info["duration"] * fps)

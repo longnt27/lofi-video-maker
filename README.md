@@ -10,7 +10,7 @@ It runs from the command line on **macOS and Windows**. AI watermark repair (LaM
 - **FFmpeg and FFprobe** available on `PATH`. Use a full FFmpeg build with `libx264`; `libx265` is needed for HEVC on Windows.
 - Source video (preferably a seamless loop) and at least one music file.
 - Free disk space for intermediate media. 4K exports can require many GB.
-- Optional watermark cleanup: OpenCV, NumPy and ONNX Runtime from `requirements-watermark.txt`. The LaMa model (~200 MB) downloads on first use unless `--lama-model` points to a local copy.
+- Watermark cleanup dependencies: OpenCV, NumPy and ONNX Runtime from `requirements.txt`. The LaMa model (~200 MB) downloads on first use unless `--lama-model` points to a local copy.
 - Optional AI upscale: a **platform-compatible** `realesrgan-ncnn-vulkan` binary and its matching `models/` directory. On Windows the file is `realesrgan-ncnn-vulkan.exe`, and a Vulkan-capable GPU/driver is required. This tool does **not** download that executable or its model weights.
 
 > AI models and FFmpeg are separate dependencies. You can make an entire video without AI packages or GPU setup.
@@ -162,7 +162,7 @@ Use only on video you are authorized to modify.
 **macOS:**
 
 ```bash
-python -m pip install -r requirements-watermark.txt
+python -m pip install -r requirements.txt
 python -c "import cv2, onnxruntime; print('LaMa dependencies OK')"
 python lofi_maker.py --video data/video.mp4 --pick-watermark --prepare-only prepared.mp4 --cache-dir ./cache
 ```
@@ -170,7 +170,7 @@ python lofi_maker.py --video data/video.mp4 --pick-watermark --prepare-only prep
 **Windows PowerShell:**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-watermark.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -c "import cv2, onnxruntime; print('LaMa dependencies OK')"
 .\.venv\Scripts\python.exe lofi_maker.py --video data/video.mp4 --pick-watermark --prepare-only prepared.mp4 --cache-dir ./cache
 ```
@@ -222,15 +222,16 @@ The original notebook is preserved at
 into `fallin_preprocess.py` and the optional desktop interface `lofi_studio.py`.
 The browser automation and seamless-loop features from main remain available.
 
-Install **one** ONNX Runtime variant with the same Python used to run the tool:
+Install all project dependencies with the same Python used to run the tool:
 
 ```powershell
-# CPU (also works without NVIDIA CUDA libraries):
-python -m pip install -r requirements-fallin.txt
-
-# OR NVIDIA GPU: use a clean environment, not alongside the CPU runtime wheel.
-python -m pip install -r requirements-fallin-gpu.txt
+python -m pip install -r requirements.txt
 ```
+
+This single file includes Studio, preprocessing, Chrome automation and test
+dependencies. Windows/Linux use the ONNX GPU wheel, which also supports
+`--fallin-device cpu`; macOS uses the CPU wheel. Do not install both ONNX
+Runtime wheels into the same environment.
 
 GPU inference requires CUDA and cuDNN runtime libraries compatible with the
 installed `onnxruntime-gpu` build. A graphics driver alone is not sufficient.
@@ -277,7 +278,7 @@ variable timestamp spacing rather than silently retiming audio.
 ### Optional desktop interface
 
 ```powershell
-python -m pip install -r requirements-studio.txt
+python -m pip install -r requirements.txt
 python lofi_studio.py --device cuda
 ```
 
@@ -392,7 +393,7 @@ Start the server with `python -m chatgpt_api` or `python chatgpt_web.py --serve`
 
 `flow_web.py` and `flow_api.py` automate **Google Flow** (`https://flow.google.com/`) in Chrome to animate a local image into a video clip. This uses Flow's website and an existing signed-in Chrome profile; each generation uses Flow credits.
 
-Install the API dependencies with `python -m pip install fastapi uvicorn playwright` and have Google Chrome installed.
+Install dependencies with `python -m pip install -r requirements.txt` and have Google Chrome installed.
 
 ### CLI Usage
 
@@ -438,10 +439,10 @@ The server binds to `127.0.0.1` by default. Keep it local: requests read image f
 
 ## Develop and test
 
-Core rendering uses Python's standard library plus FFmpeg. AI packages are optional.
+Core rendering uses Python's standard library plus FFmpeg. Install the complete dependency set from `requirements.txt`.
 
 ```bash
-python -m pip install -r requirements-watermark.txt
+python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 ```
 

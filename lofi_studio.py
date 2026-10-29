@@ -109,7 +109,7 @@ def build_app(home: Path, device: str = "auto"):
             f'{result["frames"]} frame | {time.perf_counter()-start:.1f}s. '
             "Giữ âm thanh nếu nguồn có; Fallin AI 2×, có thể thu nhỏ theo lựa chọn.")
 
-    with gr.Blocks(title="LoFi Studio · LaMa + Fallin", theme=gr.themes.Soft()) as app:
+    with gr.Blocks(title="LoFi Studio · LaMa + Fallin") as app:
         gr.Markdown("## LoFi Studio · LaMa → Fallin → MP4\nUpload một lần, giữ FPS nguồn. Fallin: renarchi, CC BY 4.0.")
         with gr.Row():
             with gr.Column():
@@ -148,7 +148,7 @@ def main():
     parser.add_argument("--share", action="store_true", help="Explicitly enable a public Gradio share link")
     args = parser.parse_args()
     build_app(args.cache_dir, args.device).queue(default_concurrency_limit=1).launch(
-        server_name=args.host, server_port=args.port, share=args.share, show_error=True)
+        server_name=args.host, server_port=args.port, share=args.share, show_error=True, theme="soft")
 
 
 if __name__ == "__main__":

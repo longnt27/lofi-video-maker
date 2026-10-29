@@ -85,7 +85,7 @@ class FrameProcessor:
             import numpy as np
             import onnxruntime as ort
         except ImportError as exc:
-            raise RuntimeError("Install requirements-fallin.txt (CPU) or requirements-fallin-gpu.txt (NVIDIA)") from exc
+            raise RuntimeError("Install dependencies: python -m pip install -r requirements.txt") from exc
         if variant not in ("soft", "strong") or device not in ("auto", "cpu", "cuda"):
             raise ValueError("Invalid Fallin model/device")
         if tile != 0 and tile < 64:

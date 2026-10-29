@@ -1,5 +1,0 @@
-# NVIDIA install: use CUDA/cuDNN libraries matching this ONNX Runtime build.
-# Do not install onnxruntime (CPU wheel) alongside onnxruntime-gpu.
-numpy>=1.24
-opencv-python>=4.8
-onnxruntime-gpu>=1.21
