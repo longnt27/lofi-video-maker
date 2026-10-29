@@ -255,6 +255,56 @@ Only human-readable stages and progress milestones appear in the terminal. Detai
 - **Video jumps between loops:** enable `--seamless-loop --loop-overlap 3`. The CapCut-style compound uses two opacity fades and preserves playback speed. Dust-section phase is aligned where possible. If the fades show double-exposed motion, try a shorter overlap or a more compatible source clip.
 - **Windows symlink permissions:** recent versions use hard links with a copy fallback; Developer Mode is not required for video assembly.
 
+## ChatGPT Web Workflow & Image Generation API
+
+Generate background images directly using your authenticated ChatGPT Web session (Chrome + CDP automation, evading anti-bot detection).
+
+### Features
+- **Prompt to Image**: Uses your saved chat (default: `[Image gen]`) to generate high-resolution illustrations.
+- **Auto Image Extraction**: Extracts generated images from browser blob URLs directly to WebP/PNG disk files.
+- **Prompt to Text**: Fast query in temporary chat (`?temporary-chat=true`) with automatic clipboard/DOM reply extraction.
+- **Thinking Effort Management**: Automatically selects `Instant` mode for rapid generation.
+- **REST API & CLI**: Both a command-line interface and a FastAPI HTTP server.
+
+### CLI Usage
+
+```bash
+# Check status and login
+python chatgpt_web.py --status
+
+# Generate an image using [Image gen] chat
+python chatgpt_web.py --image "A cozy lofi bedroom at sunset, anime style" --output cozy_room.webp
+
+# Text prompt in temporary chat
+python chatgpt_web.py --prompt "Suggest 5 atmospheric lofi theme ideas"
+
+# Start the FastAPI HTTP API server
+python chatgpt_web.py --serve --port 8000
+```
+
+### HTTP REST API
+
+Start the server with `python -m chatgpt_api` or `python chatgpt_web.py --serve`.
+
+- `POST /api/image`: Generate an image:
+  ```json
+  {
+    "prompt": "Cozy rain on coffee shop window lofi aesthetic",
+    "chat_name": "[Image gen]",
+    "output_path": "cache/images/cafe.webp",
+    "include_base64": false
+  }
+  ```
+- `POST /api/chat`: Send a prompt for text output:
+  ```json
+  {
+    "prompt": "Write a title for a chill lo-fi mix",
+    "temporary": true
+  }
+  ```
+- `GET /api/status`: Inspect login status and configuration.
+- `POST /api/login`: Open a visible Chrome window to log in.
+
 ## Google Flow Web Automation (Image-to-Video Looping)
 
 `flow_web.py` and `flow_api.py` automate **Google Flow** (`https://flow.google.com/`) in Chrome to animate a local image into a video clip. This uses Flow's website and an existing signed-in Chrome profile; each generation uses Flow credits.
