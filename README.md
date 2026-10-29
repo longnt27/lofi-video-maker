@@ -499,3 +499,8 @@ The tests use synthetic media and mock AI engines; they do **not** validate real
 
 - The project is a media-generation pipeline, not a copyright-removal or licensing tool. Ensure appropriate rights for all input footage and audio.
 - Cache keys account for preprocessing settings and model-file metadata. Keep `cache/` for subsequent mixes, but do not commit generated videos or cache assets.
+
+
+Studio có một nút **Tạo bản mix MP4**: chọn video → khoanh watermark → xem thử vùng sửa → chọn thư mục nhạc → chọn thư mục lưu → xuất. Mặc định dùng toàn bộ playlist; có thể chọn 30 giây để thử. Mỗi lần chạy tạo một bản mix mới, không xuất clip trung gian vào thư mục kết quả và không tự xóa bản mix cũ. Thiết lập ít dùng được gom trong mục nâng cao.
+
+LaMa dùng mask chữ nhật như notebook Colab gốc; chỉ viền pha trộn được nới nhẹ. Preview phóng to vùng watermark để phát hiện vệt vá trước khi render. Khoanh sát toàn bộ logo (chừa khoảng 1–2 pixel); khoanh quá rộng làm AI phải vẽ lại nhiều nền. Model xử lý từng frame nên vẫn có thể mất chi tiết hoặc rung ở vùng sửa, đặc biệt khi nền có chuyển động.

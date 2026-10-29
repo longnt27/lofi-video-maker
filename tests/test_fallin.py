@@ -62,6 +62,14 @@ class StreamingTests(unittest.TestCase):
         self.encoder_patch.start()
         self.addCleanup(self.encoder_patch.stop)
 
+    def test_colab_mask_only_removes_selected_pixels(self):
+        crop, mask, alpha = self.processor.crop_settings((50, 40, 12, 8), 160, 120)
+        left, top, right, bottom = crop
+        self.assertEqual(int((mask > 0).sum()), 12*8)
+        self.assertTrue((alpha[40-top:48-top, 50-left:62-left] == 1).all())
+        self.assertGreater(float(alpha[44-top, 49-left, 0]), 0)
+        self.assertEqual(mask[44-top, 49-left], 0)
+
     def test_lama_fallin_stream_preserves_fps_frames_and_audio(self):
         dest = self.root/"prepared.mp4"
         result = fallin.stream_video(self.source, dest, self.processor, box=(4, 4, 8, 8), keep_audio=True)

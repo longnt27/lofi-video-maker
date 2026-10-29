@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pipeline_status as status
 
-VERSION = "lama-fallin-stream-v1"
+VERSION = "lama-fallin-stream-v2"
 LAMA_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
 FALLIN_URL = "https://github.com/renarchi/Re-SISR/releases/download/Fallin/"
 
@@ -180,10 +180,11 @@ class FrameProcessor:
         right, bottom = min(width, x+w+margin), min(height, y+h+margin)
         mask = np.zeros((bottom-top, right-left), np.uint8)
         mask[y-top:y+h-top, x-left:x+w-left] = 255
-        # Use the expanded mask for BOTH inference and blending to remove logo edges.
-        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
+        # Match the original Colab: inpaint only the selected rectangle.
+        # Dilate only the blend boundary, not the model's removal mask.
+        dilated = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)))
         sigma = max(1, max(2, min(8, round(min(w, h)*0.04)))/2)
-        alpha = cv2.GaussianBlur(mask.astype(np.float32)/255, (0, 0), sigmaX=sigma)
+        alpha = cv2.GaussianBlur(dilated.astype(np.float32)/255, (0, 0), sigmaX=sigma)
         alpha[mask == 255] = 1
         return (left, top, right, bottom), mask, alpha[..., None]
 
