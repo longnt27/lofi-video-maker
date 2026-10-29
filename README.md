@@ -255,6 +255,54 @@ Only human-readable stages and progress milestones appear in the terminal. Detai
 - **Video jumps between loops:** enable `--seamless-loop --loop-overlap 3`. The CapCut-style compound uses two opacity fades and preserves playback speed. Dust-section phase is aligned where possible. If the fades show double-exposed motion, try a shorter overlap or a more compatible source clip.
 - **Windows symlink permissions:** recent versions use hard links with a copy fallback; Developer Mode is not required for video assembly.
 
+## Google Flow Web Automation (Image-to-Video Looping)
+
+`flow_web.py` and `flow_api.py` automate **Google Flow** (`https://flow.google.com/`) in Chrome to animate a local image into a video clip. This uses Flow's website and an existing signed-in Chrome profile; each generation uses Flow credits.
+
+Install the API dependencies with `python -m pip install fastapi uvicorn playwright` and have Google Chrome installed.
+
+### CLI Usage
+
+```bash
+# Check Google Flow login status
+python flow_web.py --status
+
+# Authenticate once in Chrome if needed
+python flow_web.py --login
+
+# Generate a 10-second clip with matching start and end frames
+python flow_web.py --image scratch/lofi_coffee.webp \
+                   --prompt "create a seamless loop video of 10s" \
+                   --duration 10 \
+                   --loop \
+                   --output scratch/lofi_coffee_loop.mp4
+
+# Start the Google Flow FastAPI server
+python flow_web.py --serve --port 8001
+```
+
+### Google Flow HTTP REST API
+
+Start the server with `python -m flow_api` or `python flow_web.py --serve`.
+
+Send the JSON below to `http://127.0.0.1:8001/api/video` with `Content-Type: application/json`.
+
+- `POST /api/video`: Generate a video from an image. `duration` accepts 4, 6, 8, or 10 seconds. With `loop: true`, the image is used as both start and end frames; the generated motion may still need a seam check.
+  ```json
+  {
+    "image_path": "scratch/lofi_coffee.webp",
+    "prompt": "create a seamless loop video of 10s",
+    "duration": 10,
+    "loop": true,
+    "project_url": "https://flow.google.com/project/5d272dab-59e3-4a29-9297-b139770754b8",
+    "output_path": "scratch/lofi_coffee_loop.mp4"
+  }
+  ```
+- `GET /api/status`: Check Google Flow session and project URL.
+- `POST /api/login`: Launch visible Chrome to log in to Google Flow.
+
+The server binds to `127.0.0.1` by default. Keep it local: requests read image files from this computer and write MP4 files here. Close any other Chrome window using the same automation profile before generating.
+
 ## Develop and test
 
 Core rendering uses Python's standard library plus FFmpeg. AI packages are optional.
