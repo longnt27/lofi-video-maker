@@ -318,6 +318,17 @@ discards partial output while retaining finished AI caches. Pending export
 requests are cancelled too. A failed or cancelled job does not expose an
 incomplete MP4. Diagnostic logs are under `cache/studio/jobs/<job-id>/`.
 
+**Save directly to disk:** choose **Output video folder** with the native picker
+or paste a writable path. The default is `cache/studio/outputs`. Full music
+videos render to a temporary MP4 in that destination folder, then are renamed
+after validation, including when the folder is on another drive. There is no
+final multi-GB copy from the cache drive. Studio displays the saved path as text
+and offers **Open results folder**. It does not return finished videos through
+Gradio's File/Video components, so it does not create another browser-serving
+copy, transcode a browser preview, or require a download. Open the saved MP4 in
+your local player. On remote/Colab servers the chosen path belongs to the server;
+use a mounted Drive folder when appropriate.
+
 Studio tests
 H.264 NVENC before using it and otherwise uses x264; audio is muxed after frame
 processing without re-encoding the video. The UI serializes preview and export

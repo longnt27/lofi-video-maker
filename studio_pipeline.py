@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 from types import SimpleNamespace
 import uuid
@@ -48,7 +49,7 @@ def clock(seconds: float) -> str:
     return f"{value//3600:02}:{value//60%60:02}:{value%60:02}"
 
 
-def choose_folder() -> str:
+def choose_folder(title: str = "Chọn thư mục nhạc") -> str:
     """Native folder picker on the computer running Studio (never uploads music)."""
     import tkinter as tk
     from tkinter import filedialog
@@ -56,7 +57,7 @@ def choose_folder() -> str:
     root.withdraw()
     try:
         root.attributes("-topmost", True)
-        return filedialog.askdirectory(parent=root, title="Chọn thư mục nhạc")
+        return filedialog.askdirectory(parent=root, title=title)
     finally:
         root.destroy()
 
@@ -86,6 +87,32 @@ class Job:
     cancelled: bool = False
 
 
+def partial_output(output: Path) -> Path:
+    """Keep the large render on its destination volume, then rename atomically."""
+    return output.with_name(f".{output.stem}.part.mp4")
+
+
+def output_directory(value: str | None, home: Path) -> Path:
+    folder = Path(value.strip().strip('"')).expanduser().resolve() if value and value.strip() else (home/"outputs").resolve()
+    folder.mkdir(parents=True, exist_ok=True)
+    # Check permissions before spending time on AI and rendering.
+    with tempfile.TemporaryFile(dir=folder):
+        pass
+    return folder
+
+
+def open_output_folder(saved_path: str, folder: str, home: Path) -> str:
+    target = Path(saved_path).parent if saved_path else output_directory(folder, home)
+    if not target.is_dir():
+        raise ValueError("Thư mục kết quả không tồn tại.")
+    if sys.platform == "win32":
+        os.startfile(str(target))
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(target)],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return f"Đã mở thư mục: {target}"
+
+
 class JobRunner:
     def __init__(self, home: Path):
         self.home = Path(home)
@@ -96,10 +123,11 @@ class JobRunner:
         with self.lock:
             if self.active is not None:
                 raise ValueError("Đang có tác vụ chạy. Hãy chờ hoặc bấm Hủy.")
+            destination = output_directory(config.get("output_dir"), self.home)
             folder = self.home/"jobs"/uuid.uuid4().hex
             folder.mkdir(parents=True)
             config = {**config, "home": str(self.home.resolve()), "job_dir": str(folder.resolve())}
-            output = self.home/"outputs"/f'{config["kind"]}_{folder.name[:10]}.mp4'
+            output = destination/f'{config["kind"]}_{folder.name[:10]}.mp4'
             config["output"] = str(output.resolve())
             (folder/"config.json").write_text(json.dumps(config), encoding="utf-8")
             env = {**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"}
@@ -146,6 +174,7 @@ class JobRunner:
                 state = {"status": "error", "stage": state.get("error") or "Tác vụ thất bại. Xem log.",
                          "log": str(job.folder/"worker.log")}
                 job.output.unlink(missing_ok=True)
+            partial_output(job.output).unlink(missing_ok=True)
             # Scratch media stays under the job, separate from reusable AI cache.
             shutil.rmtree(job.folder/"scratch", ignore_errors=True)
             self.active = None
@@ -204,6 +233,7 @@ def run_job(config: dict) -> None:
     scratch.mkdir(parents=True)
     output = Path(config["output"])
     output.parent.mkdir(parents=True, exist_ok=True)
+    partial = partial_output(output)
 
     def emit(stage, progress=None, **extra):
         # Append-only events avoid Windows file-replacement locks while the UI polls.
@@ -221,7 +251,6 @@ def run_job(config: dict) -> None:
         prepared = prepare_clip(config, scratch, emit)
         info = media_info(prepared)
         if config["kind"] == "clip":
-            partial = scratch/"final.mp4"
             shutil.copy2(prepared, partial)
         else:
             fps = int(info["fps"])
@@ -243,7 +272,6 @@ def run_job(config: dict) -> None:
             audio = scratch/"music.flac"
             maker.combine_music(playlist["paths"], audio, config["crossfade"], config.get("preview"))
             duration = maker.media_duration(audio, "audio")
-            partial = scratch/"final.mp4"
             emit("Lặp video nền và áp dụng fade/hiệu ứng")
             # Reuse the same tested renderer as the CLI, not a second media engine.
             original_step = status.step
@@ -276,6 +304,7 @@ def run_job(config: dict) -> None:
         emit("Tác vụ thất bại", status="error", error=str(exc))
         raise
     finally:
+        partial.unlink(missing_ok=True)
         shutil.rmtree(scratch, ignore_errors=True)
 
 

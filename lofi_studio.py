@@ -18,7 +18,7 @@ def build_app(home: Path, device: str = "auto"):
     import numpy as np
     from gradio_image_annotation import image_annotator
     from fallin_preprocess import FrameProcessor, media_info, output_size
-    from studio_pipeline import JobRunner, choose_folder, collect_music, clock, read_state
+    from studio_pipeline import JobRunner, choose_folder, collect_music, clock, read_state, open_output_folder
 
     home = home.expanduser().resolve()
     home.mkdir(parents=True, exist_ok=True)
@@ -108,7 +108,10 @@ def build_app(home: Path, device: str = "auto"):
         # Release preview GPU models before launching the worker's ONNX sessions.
         active[:] = [None, None]
         gc.collect()
-        job = runner.start(config)
+        try:
+            job = runner.start(config)
+        except OSError as exc:
+            raise gr.Error(f"Không ghi được vào thư mục lưu. Chọn thư mục khác: {exc}") from exc
         start = time.perf_counter()
         finalized = False
         try:
@@ -118,35 +121,37 @@ def build_app(home: Path, device: str = "auto"):
                 stage = state.get("stage", "Đang xử lý")
                 progress((min(fraction, 0.99) if fraction is not None else None), desc=stage)
                 suffix = f" ({fraction*100:.0f}%)" if fraction is not None else ""
-                yield gr.skip(), gr.skip(), f"{stage}{suffix} | {time.perf_counter()-start:.0f}s"
+                yield gr.skip(), f"{stage}{suffix} | {time.perf_counter()-start:.0f}s"
                 time.sleep(0.4)
             state = runner.finish(job)
             finalized = True
             if state["status"] == "done":
                 progress(1, desc="Hoàn tất")
-                yield state["output"], state["output"], state["stage"]
+                # Text only: no Gradio File/Video postprocessing, hashing, copying
+                # or browser download of potentially multi-GB output.
+                yield state["output"], state["stage"]+"\nĐã lưu trực tiếp trên máy, không cần tải về."
             elif state["status"] == "cancelled":
-                yield gr.skip(), gr.skip(), state["stage"]
+                yield gr.skip(), state["stage"]
             else:
                 log = job.folder/"worker.log"
                 tail = ""
                 if log.exists():
                     with log.open(encoding="utf-8", errors="replace") as stream:
                         tail = "".join(deque(stream, maxlen=10))[-1800:]
-                yield gr.skip(), gr.skip(), f'{state["stage"]}\nLog: {log}\n{tail}'
+                yield gr.skip(), f'{state["stage"]}\nLog: {log}\n{tail}'
         finally:
             if not finalized:
                 runner.cancel()
                 job.process.wait(timeout=5)
                 runner.finish(job)
 
-    def export_clip(path, ann, remove, variant, edge, seconds, grain, tile, fps, progress=gr.Progress()):
+    def export_clip(path, ann, remove, variant, edge, seconds, grain, tile, fps, output_dir, progress=gr.Progress()):
         config = base_config(path, ann, remove, variant, edge, seconds, grain, tile, fps)
-        yield from execute({**config, "kind": "clip"}, progress)
+        yield from execute({**config, "kind": "clip", "output_dir": output_dir}, progress)
 
     def export_mix(path, ann, remove, variant, edge, seconds, grain, tile, fps,
                    music, recursive, shuffle, seed, crossfade, fade, seamless, overlap, dust,
-                   duration_choice, progress=gr.Progress()):
+                   duration_choice, output_dir, progress=gr.Progress()):
         config = base_config(path, ann, remove, variant, edge, seconds, grain, tile, fps)
         try:
             collect_music(music, recursive, shuffle, int(seed), crossfade)
@@ -159,7 +164,7 @@ def build_app(home: Path, device: str = "auto"):
         preview_seconds = {"30 giây": 30, "125 giây": 125, "Toàn bộ playlist": None}[duration_choice]
         config.update(kind="mix", music=music, recursive=recursive, shuffle=shuffle, seed=int(seed),
             crossfade=crossfade, fade=fade, seamless=seamless, overlap=overlap,
-            dust=dust, preview=preview_seconds, codec="h264")
+            dust=dust, preview=preview_seconds, codec="h264", output_dir=output_dir)
         yield from execute(config, progress)
 
     def pick_music():
@@ -168,6 +173,16 @@ def build_app(home: Path, device: str = "auto"):
             return selected if selected else gr.skip()
         except Exception as exc:
             raise gr.Error("Không mở được cửa sổ chọn thư mục. Dán đường dẫn folder vào ô bên dưới.") from exc
+
+    def pick_output():
+        try:
+            selected = choose_folder("Chọn thư mục lưu video")
+            return selected if selected else gr.skip()
+        except Exception as exc:
+            raise gr.Error("Không mở được cửa sổ chọn thư mục. Dán đường dẫn thư mục lưu vào ô bên dưới.") from exc
+
+    def open_result(saved_path, folder):
+        return open_output_folder(saved_path, folder, home)
 
     def inspect_music(folder, recursive, shuffle, seed, crossfade):
         if not folder or not folder.strip():
@@ -195,6 +210,8 @@ def build_app(home: Path, device: str = "auto"):
                 grain = gr.Slider(0, 5, value=0, step=0.1, label="Grain vùng sửa")
                 tile = gr.Checkbox(value=True, label="Chia ô 512px để giảm VRAM")
                 preview_btn = gr.Button("Xem thử một frame")
+                output_dir = gr.Textbox(value=str(home/"outputs"), label="Thư mục lưu video trên máy", placeholder=r"D:\LoFi Exports")
+                output_folder_btn = gr.Button("Chọn thư mục lưu video")
                 export_btn = gr.Button("Xuất clip đã xử lý")
                 with gr.Accordion("Nhạc và video dài", open=True):
                     folder_btn = gr.Button("Chọn thư mục nhạc trên máy")
@@ -217,18 +234,21 @@ def build_app(home: Path, device: str = "auto"):
                 report = gr.Textbox(label="Trạng thái")
                 comparison = gr.Image(label="Crop: Lanczos / Fallin")
                 full = gr.Image(label="Frame đầy đủ (giao diện có thể thu nhỏ)")
-                video = gr.Video(label="MP4 kết quả")
-                download = gr.File(label="Tải MP4")
+                saved_path = gr.Textbox(label="File MP4 đã lưu trên máy", interactive=False)
+                open_folder_btn = gr.Button("Mở thư mục kết quả")
+                gr.Markdown("Video được ghi thẳng vào thư mục đã chọn. Không cần tải MP4 qua trình duyệt.")
         pick.click(first_frame, inputs=source, outputs=[ann, report], concurrency_id="studio", concurrency_limit=1)
         source.change(lambda: (None, "Hãy lấy frame và khoanh lại vùng watermark cho video mới."),
                       outputs=[ann, report], concurrency_id="studio", concurrency_limit=1)
         common = [source, ann, remove, variant, edge]
         preview_btn.click(preview, inputs=common+[grain, tile], outputs=[comparison, full, report], concurrency_id="studio", concurrency_limit=1)
-        clip_event = export_btn.click(export_clip, inputs=common+[seconds, grain, tile, fps], outputs=[video, download, report], concurrency_id="studio", concurrency_limit=1)
-        mix_event = mix_btn.click(export_mix, inputs=common+[seconds, grain, tile, fps, music, recursive, shuffle, seed, crossfade, fade, seamless, overlap, dust, duration_choice],
-                      outputs=[video, download, report], concurrency_id="studio", concurrency_limit=1)
+        clip_event = export_btn.click(export_clip, inputs=common+[seconds, grain, tile, fps, output_dir], outputs=[saved_path, report], concurrency_id="studio", concurrency_limit=1)
+        mix_event = mix_btn.click(export_mix, inputs=common+[seconds, grain, tile, fps, music, recursive, shuffle, seed, crossfade, fade, seamless, overlap, dust, duration_choice, output_dir],
+                      outputs=[saved_path, report], concurrency_id="studio", concurrency_limit=1)
         cancel_btn.click(runner.cancel, outputs=report, queue=False, cancels=[clip_event, mix_event])
         folder_btn.click(pick_music, outputs=music, concurrency_id="folder-picker", concurrency_limit=1)
+        output_folder_btn.click(pick_output, outputs=output_dir, concurrency_id="folder-picker", concurrency_limit=1)
+        open_folder_btn.click(open_result, inputs=[saved_path, output_dir], outputs=report, queue=False)
         music_inputs = [music, recursive, shuffle, seed, crossfade]
         scan_btn.click(inspect_music, inputs=music_inputs, outputs=[playlist_table, playlist_summary])
         for control in music_inputs:

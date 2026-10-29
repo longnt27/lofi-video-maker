@@ -77,8 +77,14 @@ class StudioPipelineTests(unittest.TestCase):
 
     def test_full_mix_uses_existing_renderer_and_has_playlist_audio(self):
         config = self.config()
-        with patch.object(studio, "prepare_clip", return_value=self.source):
+        destination = self.root/"chosen-output"
+        config["output"] = str(destination/"finished.mp4")
+        import lofi_maker
+        with patch.object(studio, "prepare_clip", return_value=self.source), \
+             patch.object(lofi_maker, "render_fast_without_dust", wraps=lofi_maker.render_fast_without_dust) as render:
             studio.run_job(config)
+        self.assertEqual(Path(render.call_args.args[2]).parent, destination)
+        self.assertFalse(studio.partial_output(Path(config["output"])).exists())
         state = studio.read_state(Path(config["job_dir"]))
         self.assertEqual(state["status"], "done")
         from fallin_preprocess import media_info
@@ -119,6 +125,16 @@ class StudioPipelineTests(unittest.TestCase):
             self.assertEqual(first, second)
             self.assertEqual(infer.call_count, 1)
 
+    def test_output_folder_validation(self):
+        chosen = self.root/"exports"/"new-folder"
+        self.assertEqual(studio.output_directory(str(chosen), self.root), chosen.resolve())
+        self.assertEqual(studio.output_directory("", self.root), (self.root/"outputs").resolve())
+        file = self.root/"not-a-directory"
+        file.write_text("keep")
+        with self.assertRaises(OSError):
+            studio.output_directory(str(file), self.root)
+        self.assertEqual(file.read_text(), "keep")
+
     @unittest.skipUnless(importlib.util.find_spec("psutil"), "psutil required")
     def test_cancel_kills_worker_descendants_and_cleans_partial_output(self):
         import psutil
@@ -132,7 +148,8 @@ class StudioPipelineTests(unittest.TestCase):
         popen = subprocess.Popen
         runner = studio.JobRunner(self.root)
         with patch.object(studio.subprocess, "Popen", side_effect=lambda *a, **kw: popen([sys.executable, str(script)], **kw)):
-            job = runner.start({"kind": "mix"})
+            job = runner.start({"kind": "mix", "output_dir": str(self.root/"selected-folder")})
+        self.assertEqual(job.output.parent, (self.root/"selected-folder").resolve())
         try:
             deadline = time.monotonic()+10
             while not pid_file.exists() and time.monotonic() < deadline:
@@ -141,12 +158,14 @@ class StudioPipelineTests(unittest.TestCase):
             child_pid = int(pid_file.read_text())
             job.output.parent.mkdir(parents=True, exist_ok=True)
             job.output.write_bytes(b"partial")
+            studio.partial_output(job.output).write_bytes(b"unfinished render")
             (job.folder/"scratch").mkdir()
             runner.cancel()
             job.process.wait(timeout=5)
             state = runner.finish(job)
             self.assertEqual(state["status"], "cancelled")
             self.assertFalse(job.output.exists())
+            self.assertFalse(studio.partial_output(job.output).exists())
             self.assertFalse((job.folder/"scratch").exists())
             self.assertTrue(not psutil.pid_exists(child_pid) or psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE)
         finally:
