@@ -585,8 +585,16 @@ def main() -> None:
                    help="Optional grain in repaired patch (0..5; default 0)")
     p.add_argument("--upscale", type=int, choices=[1, 2, 3, 4], default=1,
                    help="Upscale SHORT source loop by factor 1/2/3/4 (default 1=off)")
-    p.add_argument("--upscale-engine", choices=["ai", "lanczos"], default="ai",
-                   help="AI uses realesrgan-ncnn-vulkan; lanczos is fast, non-AI fallback")
+    p.add_argument("--upscale-engine", choices=["ai", "lanczos", "fallin"], default="ai",
+                   help="ai=Real-ESRGAN NCNN; fallin=LaMa/Fallin ONNX streaming; lanczos=resize")
+    p.add_argument("--fallin-model", choices=["soft", "strong"], default="soft",
+                   help="Fallin Soft (default) or Strong (may oversharpen)")
+    p.add_argument("--fallin-device", choices=["auto", "cpu", "cuda"], default="auto",
+                   help="Fallin/LaMa ONNX provider; CUDA requires compatible GPU runtime libraries")
+    p.add_argument("--fallin-short-edge", type=int,
+                   help="Optional output short edge, at most native AI 2x (e.g. 1440)")
+    p.add_argument("--fallin-tile", type=int, default=512,
+                   help="Fallin tile size, >=64; 0=full frame with automatic OOM tile retry")
     p.add_argument("--upscale-model", default="realesr-animevideov3",
                    help="Real-ESRGAN model, default anime video model from supplied notebook")
     p.add_argument("--realesrgan-bin", type=Path,
@@ -652,6 +660,14 @@ def main() -> None:
         p.error("--watermark-feather must be >= 0 and --watermark-grain 0..5")
     if opts.upscale_tile != 0 and opts.upscale_tile < 32:
         p.error("--upscale-tile must be 0 (auto) or >= 32")
+    if opts.fallin_tile != 0 and opts.fallin_tile < 64:
+        p.error("--fallin-tile must be 0 or >= 64")
+    if opts.fallin_short_edge is not None and opts.fallin_short_edge < 2:
+        p.error("--fallin-short-edge must be >= 2")
+    if opts.upscale_engine == "fallin" and opts.upscale != 2:
+        p.error("--upscale-engine fallin requires --upscale 2")
+    if opts.fallin_short_edge is not None and opts.upscale_engine != "fallin":
+        p.error("--fallin-short-edge requires --upscale-engine fallin")
     if not opts.prepare_only and (opts.music is None or not opts.music.is_dir()):
         p.error(f"Audio folder not found: {opts.music}; pass --music to export a full video")
     if opts.prepare_only and opts.video.resolve() == opts.prepare_only.resolve():

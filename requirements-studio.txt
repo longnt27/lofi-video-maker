@@ -1,0 +1,3 @@
+# Install after one of the Fallin runtime requirements files.
+gradio>=5.44,<6
+gradio-image-annotation==0.5.6

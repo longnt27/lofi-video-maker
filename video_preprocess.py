@@ -559,6 +559,9 @@ def upscale_clip(source: Path, output: Path, fps: int, scale: int,
 
 def prepare_video(source: Path, opts, work: Path) -> Path:
     """Preprocess once and return video path for the existing dust/music renderer."""
+    if opts.upscale_engine == "fallin":
+        from fallin_preprocess import prepare_fallin
+        return prepare_fallin(source, opts, work)
     box = opts.watermark_box
     has_preprocessing = bool(box or opts.upscale != 1 or opts.denoise or opts.motion_interpolation)
     if not has_preprocessing:

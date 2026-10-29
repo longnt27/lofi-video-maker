@@ -1,0 +1,4 @@
+# CPU / portable install. Install this OR requirements-fallin-gpu.txt.
+numpy>=1.24
+opencv-python>=4.8
+onnxruntime>=1.21

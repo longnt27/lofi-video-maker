@@ -215,6 +215,89 @@ On macOS use `python` with the same arguments and a macOS root path. If auto-dis
 
 To use LaMa and AI upscale together, add `--watermark-box X,Y,W,H --upscale 2 --upscale-engine ai` to the **full mix** command. These stages operate on the original short loop only and are cached.
 
+## LaMa + Fallin streaming (from the LoFi Studio notebook)
+
+The original notebook is preserved at
+`notebooks/LoFi_T4_LaMa_Fallin_All_in_One.ipynb`. Its processing is integrated
+into `fallin_preprocess.py` and the optional desktop interface `lofi_studio.py`.
+The browser automation and seamless-loop features from main remain available.
+
+Install **one** ONNX Runtime variant with the same Python used to run the tool:
+
+```powershell
+# CPU (also works without NVIDIA CUDA libraries):
+python -m pip install -r requirements-fallin.txt
+
+# OR NVIDIA GPU: use a clean environment, not alongside the CPU runtime wheel.
+python -m pip install -r requirements-fallin-gpu.txt
+```
+
+GPU inference requires CUDA and cuDNN runtime libraries compatible with the
+installed `onnxruntime-gpu` build. A graphics driver alone is not sufficient.
+See the [ONNX Runtime CUDA compatibility table](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html).
+`--fallin-device cuda` fails clearly if a CUDA session cannot initialize;
+`auto` selects CUDA when advertised by ONNX Runtime, otherwise CPU. CPU uses
+the FP32 Fallin export; CUDA uses FP16. Models download on first use.
+
+### Prepare a short clip or build the full mix
+
+```powershell
+python lofi_maker.py --video data/video.mp4 --pick-watermark --upscale-engine fallin --upscale 2 --fallin-model soft --fallin-device cuda --prepare-only prepared.mp4 --fps 24 --cache-dir ./cache
+
+python lofi_maker.py --video data/video.mp4 --music data/musics --output final.mp4 --upscale-engine fallin --upscale 2 --fallin-model soft --fallin-device cuda --seamless-loop --loop-overlap 3 --fps 24 --codec h264 --cache-dir ./cache
+```
+
+Add `--watermark-box X,Y,W,H` to the full mix if LaMa cleanup is needed.
+The watermark rectangle stays fixed through the short clip. Omit both
+watermark options to upscale without LaMa. Fallin does not use `--lama-provider`
+or `--watermark-feather`; its shared ONNX device and notebook-derived blending
+are controlled by `--fallin-device` and the watermark mask respectively.
+
+Fallin performs **native 2x AI upscaling**. `--fallin-short-edge 1440` can
+downsample the AI result for a 1080p source, but a 720p source cannot request
+2160p: that would exceed the model's 2x output. Strong can oversharpen outlines;
+Soft is the default. Processing tiles default to 512px, with automatic smaller
+tile retries for allocation failures; `--fallin-tile 0` tries full-frame first.
+Tile boundaries and per-frame model inference can still produce artifacts.
+
+LaMa and Fallin operate consecutively on decoded frames in memory, followed by
+one short-video encode. No normalized/inpainted/upscaled intermediate MP4s are
+created in this engine. FFmpeg filters handle optional denoising/FPS conversion
+before inference. Source preparation and seamless mastering are separate stages;
+the latter still performs its own encoding when enabled. The long mix retains
+the existing codec/encoder behavior (this change does not add NVENC to the long
+renderer). Prepared clips are cached by source, weights and processing settings.
+
+**FPS:** the existing long-mix CLI still uses `--fps` (default 30). Set it to
+the source's integer rate if you want to preserve that rate; the Fallin engine
+does not automatically enable motion interpolation. The desktop interface below
+preserves source CFR including fractional rates such as 30000/1001, and rejects
+variable timestamp spacing rather than silently retiming audio.
+
+### Optional desktop interface
+
+```powershell
+python -m pip install -r requirements-studio.txt
+python lofi_studio.py --device cuda
+```
+
+Open the localhost URL shown in the terminal. Upload once, select a fixed
+watermark region (or disable cleanup), preview, then export. The desktop
+interface preserves the source FPS and includes its audio if present. It tests
+H.264 NVENC before using it and otherwise uses x264; audio is muxed after frame
+processing without re-encoding the video. The UI serializes preview and export
+against the same model session. It keeps only the selected Fallin variant loaded.
+`--share` explicitly enables a temporary public Gradio link, useful in Colab;
+the default binds only to localhost. This prepares short clips, not playlists.
+
+Fallin models: **renarchi, CC BY 4.0**,
+[Soft/Strong release](https://github.com/renarchi/Re-SISR/releases/tag/Fallin).
+LaMa: [Carve/LaMa-ONNX](https://huggingface.co/Carve/LaMa-ONNX).
+Preserve model attribution with distributed outputs where applicable.
+
+Validation uses real FFmpeg streams with mock ONNX outputs. Neural model quality
+and CUDA compatibility must also be checked on the intended hardware and footage.
+
 ## Useful options
 
 | Option | Purpose |
