@@ -30,6 +30,7 @@ import sys
 import tempfile
 
 import pipeline_status as status
+from seamless_loop import prepare_seamless_master
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aif", ".aiff"}
 SCRIPT_VERSION = "dust-v5.2-quiet-status"
@@ -545,6 +546,10 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=42, help="Reproducible shuffle/particles")
     p.add_argument("--preview", type=float, help="Only export first N seconds (e.g. 130 to see dust)")
     p.add_argument("--no-dust", action="store_true", help="Disable dust and use plain looping")
+    p.add_argument("--seamless-loop", action="store_true",
+                   help="Prebuild a two-layer crossfade loop without a hard frame jump")
+    p.add_argument("--loop-overlap", type=float, default=3.0,
+                   help="Seconds of each CapCut-style opacity crossfade (default: 3.0)")
     p.add_argument("--mode", choices=["fast", "full"], default="fast",
                    help="With --no-dust: fast (copy loops) or full (encode everything)")
     p.add_argument("--section-seconds", type=float, default=60.0,
@@ -657,6 +662,8 @@ def main() -> None:
         p.error("--output must be an .mp4 file")
     if min(opts.fade, opts.crossfade, opts.dust_fade) < 0:
         p.error("Fade lengths cannot be negative")
+    if opts.seamless_loop and opts.loop_overlap <= 0:
+        p.error("--loop-overlap must be > 0 when --seamless-loop is set")
     if opts.preview is not None and opts.preview <= 0:
         p.error("--preview must be > 0")
     if opts.section_seconds <= 0 or round(opts.section_seconds * opts.fps) < 1:
@@ -678,6 +685,11 @@ def main() -> None:
         status.step("Prepare short source (LaMa/upscale as requested)")
         with tempfile.TemporaryDirectory(prefix="lofi-prepare-") as temp_dir:
             prepared = prepare_video(opts.video, opts, Path(temp_dir))
+            if opts.seamless_loop:
+                prepared = prepare_seamless_master(
+                    prepared, fps=opts.fps, overlap=opts.loop_overlap,
+                    section_seconds=opts.section_seconds, align_sections=not opts.no_dust,
+                    cache=opts.cache_dir, work=Path(temp_dir))
             opts.prepare_only.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(prepared, opts.prepare_only)
             status.action(f"Short prepared video: {opts.prepare_only.resolve()}")
@@ -706,6 +718,11 @@ def main() -> None:
         status.action(f"Soundtrack length: {duration/60:.1f} minutes")
         status.step("Prepare short source (AI processing only once)")
         processed_video = prepare_video(opts.video, opts, work)
+        if opts.seamless_loop:
+            processed_video = prepare_seamless_master(
+                processed_video, fps=opts.fps, overlap=opts.loop_overlap,
+                section_seconds=opts.section_seconds, align_sections=not opts.no_dust,
+                cache=opts.cache_dir, work=work)
         if opts.no_dust:
             if opts.mode == "full":
                 status.step("Encode complete video with opening/closing fades")

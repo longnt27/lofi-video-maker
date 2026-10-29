@@ -88,6 +88,63 @@ python lofi_maker.py --video data/video.mp4 --music data/musics --output preview
 
 If that produces `preview.mp4`, test the particle transition with `--preview 125` **and remove `--no-dust`**. The first minute is clean, the second has drifting dust. The first export may be slower because reusable clips are being encoded.
 
+## Seamless loop: the CapCut three-clip method (optional)
+
+A plain repeat jumps from the source's last frame to its first. This mode
+follows the [CapCut PC loop tutorial](https://www.youtube.com/watch?v=UzjWa7-IMo0):
+**duplicate the clip, overlap the duplicate with an opacity fade, then move
+the original opening fragment to the end with a second opacity fade**.
+The three placements form a compound clip:
+
+```text
+Clip A: original[D..end]      |----------------|
+Clip B: original[0..end]                |-----------------------|
+Clip C: original[0..D]                                     |----|
+                                 fade A -> B         fade B -> C
+compound starts at frame D; compound ends at frame D-1 (then repeats)
+```
+
+The last frame of the compound is source frame D-1, followed by source
+frame D when the compound repeats. **That wrap is a natural consecutive-frame
+boundary**, unlike a hard end-to-beginning cut. FFmpeg implements the two
+opacity keyframes using two `xfade` filters. It renders the short compound
+once, then reuses it for the long video. **There is no playback-speed retiming.**
+
+Start by previewing the result:
+
+**macOS:**
+
+```bash
+python lofi_maker.py --video data/video.mp4 --music data/musics --output seamless_preview.mp4 --seamless-loop --loop-overlap 3 --preview 125 --cache-dir ./cache --codec h264
+```
+
+**Windows PowerShell:**
+
+```powershell
+.\.venv\Scripts\python.exe lofi_maker.py --video data/video.mp4 --music data/musics --output seamless_preview.mp4 --seamless-loop --loop-overlap 3 --preview 125 --cache-dir ./cache --codec h264
+```
+
+The default overlap is **3 seconds**, matching the tutorial's example.
+Use a shorter overlap on a short clip (the input must be more than twice as
+long as the overlap). The original hard-loop behavior is unchanged unless
+`--seamless-loop` is supplied. To inspect only the short compound, run with
+`--prepare-only seamless_master.mp4 --seamless-loop`.
+
+**Clean/dust section alignment:** Both halves of the compound share a
+cycle of `source_length - overlap_length`. To prevent a new jump every
+60 seconds when clean/dust clips restart, the tool may slightly adjust
+the *overlap length* (not playback speed) so that cycle divides each
+`--section-seconds` interval exactly. For instance, a 10-second
+30fps source and 60-second sections can use an overlap of 3.33 seconds
+instead of 3.0. If no sufficiently close overlap exists, it stops and
+suggests changing `--loop-overlap`, `--section-seconds`, or using
+`--no-dust`. This avoids silently inserting a new seam.
+
+This creates **three temporal clip placements with two crossfades**, not
+separately tracked foreground/background layers. If the beginning and ending
+show very different poses, the overlap can have ghosting; no generic
+compositing method can reconstruct movement that isn't in the source.
+
 ## Full mix
 
 The following works in **macOS and Windows PowerShell** when the environment is active (use `.\.venv\Scripts\python.exe` instead of `python` on Windows if not activated):
@@ -164,6 +221,8 @@ To use LaMa and AI upscale together, add `--watermark-box X,Y,W,H --upscale 2 --
 |---|---|
 | `--preview 125` | Export only the first 125 seconds, including the first dust minute |
 | `--no-dust` | Disable particles |
+| `--seamless-loop` | Create a CapCut-style three-placement compound with two opacity fades (off by default) |
+| `--loop-overlap 3` | Requested seconds of each opacity fade; may adjust slightly to align dust sections |
 | `--dust-count 65` | Number of drifting particles |
 | `--dust-variants 10` | Number of reusable dusty sections |
 | `--section-seconds 60` | Duration of each clean/dust section |
@@ -193,7 +252,7 @@ Only human-readable stages and progress milestones appear in the terminal. Detai
 - **NCNN executable/model not found:** on Windows check for `.exe`, and provide `--realesrgan-bin` plus `--realesrgan-model-dir`. On macOS check executable permissions.
 - **AI upscale fails on GPU:** ensure the correct Vulkan-capable binary/driver and matching models, or use `--upscale-engine lanczos`.
 - **Temporary files fill the disk:** lower resolution or export a preview first; the 4K frame extraction can require substantial scratch space.
-- **Video jumps between loops:** the source animation itself must be seamless.
+- **Video jumps between loops:** enable `--seamless-loop --loop-overlap 3`. The CapCut-style compound uses two opacity fades and preserves playback speed. Dust-section phase is aligned where possible. If the fades show double-exposed motion, try a shorter overlap or a more compatible source clip.
 - **Windows symlink permissions:** recent versions use hard links with a copy fallback; Developer Mode is not required for video assembly.
 
 ## Develop and test
