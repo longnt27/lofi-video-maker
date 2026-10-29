@@ -10,7 +10,7 @@ It runs from the command line on **macOS and Windows**. AI watermark repair (LaM
 - **FFmpeg and FFprobe** available on `PATH`. Use a full FFmpeg build with `libx264`; `libx265` is needed for HEVC on Windows.
 - Source video (preferably a seamless loop) and at least one music file.
 - Free disk space for intermediate media. 4K exports can require many GB.
-- Optional watermark cleanup: OpenCV, NumPy and ONNX Runtime from `requirements-watermark.txt`. The LaMa model (~200 MB) downloads on first use unless `--lama-model` points to a local copy.
+- Watermark cleanup dependencies: OpenCV, NumPy and ONNX Runtime from `requirements.txt`. The LaMa model (~200 MB) downloads on first use unless `--lama-model` points to a local copy.
 - Optional AI upscale: a **platform-compatible** `realesrgan-ncnn-vulkan` binary and its matching `models/` directory. On Windows the file is `realesrgan-ncnn-vulkan.exe`, and a Vulkan-capable GPU/driver is required. This tool does **not** download that executable or its model weights.
 
 > AI models and FFmpeg are separate dependencies. You can make an entire video without AI packages or GPU setup.
@@ -162,7 +162,7 @@ Use only on video you are authorized to modify.
 **macOS:**
 
 ```bash
-python -m pip install -r requirements-watermark.txt
+python -m pip install -r requirements.txt
 python -c "import cv2, onnxruntime; print('LaMa dependencies OK')"
 python lofi_maker.py --video data/video.mp4 --pick-watermark --prepare-only prepared.mp4 --cache-dir ./cache
 ```
@@ -170,7 +170,7 @@ python lofi_maker.py --video data/video.mp4 --pick-watermark --prepare-only prep
 **Windows PowerShell:**
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements-watermark.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -c "import cv2, onnxruntime; print('LaMa dependencies OK')"
 .\.venv\Scripts\python.exe lofi_maker.py --video data/video.mp4 --pick-watermark --prepare-only prepared.mp4 --cache-dir ./cache
 ```
@@ -214,6 +214,152 @@ If you already have this setup in another project, **reuse it**. The tool search
 On macOS use `python` with the same arguments and a macOS root path. If auto-discovery fails, set `--realesrgan-bin` to the exact executable and `--realesrgan-model-dir` to the model folder. `--check-upscaler` only checks paths and model files; **actual GPU compatibility is verified by a short `--prepare-only` run**.
 
 To use LaMa and AI upscale together, add `--watermark-box X,Y,W,H --upscale 2 --upscale-engine ai` to the **full mix** command. These stages operate on the original short loop only and are cached.
+
+## LaMa + Fallin streaming (from the LoFi Studio notebook)
+
+The original notebook is preserved at
+`notebooks/LoFi_T4_LaMa_Fallin_All_in_One.ipynb`. Its processing is integrated
+into `fallin_preprocess.py` and the optional desktop interface `lofi_studio.py`.
+The browser automation and seamless-loop features from main remain available.
+
+Install all project dependencies with the same Python used to run the tool:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+This single file includes Studio, preprocessing, Chrome automation and test
+dependencies. Windows/Linux use the ONNX GPU wheel, which also supports
+`--fallin-device cpu`; macOS uses the CPU wheel. Do not install both ONNX
+Runtime wheels into the same environment.
+
+GPU inference requires CUDA and cuDNN runtime libraries compatible with the
+installed `onnxruntime-gpu` build. The unified requirements pin ONNX Runtime
+1.26.0 (CUDA 12) and install its CUDA/cuDNN runtime packages, so a clean venv
+does not depend on another application's DLLs. Restart Studio after installing
+or changing native libraries. A compatible NVIDIA graphics driver is still required.
+See the [ONNX Runtime CUDA compatibility table](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html).
+`--fallin-device cuda` fails clearly if a CUDA session cannot initialize;
+`auto` selects CUDA when advertised by ONNX Runtime, otherwise CPU. CPU uses
+the FP32 Fallin export; CUDA uses FP16. Models download on first use.
+
+### Prepare a short clip or build the full mix
+
+```powershell
+python lofi_maker.py --video data/video.mp4 --pick-watermark --upscale-engine fallin --upscale 2 --fallin-model soft --fallin-device cuda --prepare-only prepared.mp4 --fps 24 --cache-dir ./cache
+
+python lofi_maker.py --video data/video.mp4 --music data/musics --output final.mp4 --upscale-engine fallin --upscale 2 --fallin-model soft --fallin-device cuda --seamless-loop --loop-overlap 3 --fps 24 --codec h264 --cache-dir ./cache
+```
+
+Add `--watermark-box X,Y,W,H` to the full mix if LaMa cleanup is needed.
+The watermark rectangle stays fixed through the short clip. Omit both
+watermark options to upscale without LaMa. Fallin does not use `--lama-provider`
+or `--watermark-feather`; its shared ONNX device and notebook-derived blending
+are controlled by `--fallin-device` and the watermark mask respectively.
+
+Fallin performs **native 2x AI upscaling**. `--fallin-short-edge 1440` can
+downsample the AI result for a 1080p source, but a 720p source cannot request
+2160p: that would exceed the model's 2x output. Strong can oversharpen outlines;
+Soft is the default. Processing tiles default to 512px, with automatic smaller
+tile retries for allocation failures; `--fallin-tile 0` tries full-frame first.
+Tile boundaries and per-frame model inference can still produce artifacts.
+
+LaMa and Fallin operate consecutively on decoded frames in memory, followed by
+one short-video encode. No normalized/inpainted/upscaled intermediate MP4s are
+created in this engine. FFmpeg filters handle optional denoising/FPS conversion
+before inference. Source preparation and seamless mastering are separate stages;
+the latter still performs its own encoding when enabled. The long mix retains
+the existing codec/encoder behavior (this change does not add NVENC to the long
+renderer). Prepared clips are cached by source, weights and processing settings.
+
+**FPS:** the existing long-mix CLI still uses `--fps` (default 30). Set it to
+the source's integer rate if you want to preserve that rate; the Fallin engine
+does not automatically enable motion interpolation. The desktop interface below
+preserves source CFR including fractional rates such as 30000/1001, and rejects
+variable timestamp spacing rather than silently retiming audio.
+
+### Optional desktop interface
+
+```powershell
+python -m pip install -r requirements.txt
+python lofi_studio.py --device cuda
+```
+
+Open the localhost URL shown in the terminal. Upload once, select a fixed
+watermark region (or disable cleanup), and preview the image quality.
+Choose a music folder with the native picker (on the computer running Studio),
+or paste its path. Supported tracks are listed in natural filename order with
+their lengths and the expected playlist duration after crossfades. Subfolders
+are excluded unless explicitly enabled. Shuffle is reproducible by seed.
+
+The same interface has **Export processed clip** and **Export music video**.
+Both use the selected first N seconds of the uploaded clip (default 10, at most
+60) and share a cache keyed by source, models, watermark and output settings.
+Exporting the short clip first lets you inspect it before a long render without
+repeating AI inference. Changing only music or loop/fade settings reuses the
+prepared clip. Studio exports one final music-video mix. Original video audio
+is kept quietly beneath the playlist by default (10% linear gain). Under the
+music section, turn off **Giữ tiếng môi trường từ video gốc** for music only, or
+adjust **Âm lượng tiếng gốc (%)** from 0 to 100. A source with no audio falls back
+to music only.
+
+Only the selected source span is extracted into a short lossless ambience loop,
+with up to a 250 ms tail-to-head crossfade. The ambience loops independently of
+the visual transition and is mixed at the final mux, with peak limiting and
+global opening/closing fades on the combined soundtrack. This keeps stream-copy
+video assembly fast and avoids another full-length intermediate soundtrack.
+Original dialogue or music is retained too; this does not isolate sound effects.
+
+Full export length follows the playlist after crossfades. The selector defaults
+to **Toàn bộ playlist**; choose 30 seconds for a quick test or 125 seconds to inspect
+dust before a full export.
+
+The CLI uses the same 10% default: --source-audio-volume 15 changes the gain,
+and --mute-source-audio or --source-audio-volume 0 produces music only. These
+settings affect the final mix, not the short preprocessing output.
+
+Select seamless looping and opening/closing fades in the music section. Dust is
+off by default; when enabled, Studio creates one reusable dust variant and aligns
+clean/dust section lengths near 60 seconds to the loop's phase. The image preview
+and short export preserve source CFR, including fractional FPS. The existing
+long-video renderer requires integer FPS: for fractional sources select an
+explicit 24/25/30/50/60 FPS in Studio. This changes frame sampling, without motion
+interpolation.
+
+Each export runs in its own Python worker. Stage updates and AI frame progress
+appear in the UI; unknown render-stage progress is not presented as a made-up
+percentage. **Cancel export** stops the worker and its FFmpeg descendants and
+discards partial output while retaining finished AI caches. Pending export
+requests are cancelled too. A failed or cancelled job does not expose an
+incomplete MP4. Diagnostic logs are under `cache/studio/jobs/<job-id>/`.
+
+**Save directly to disk:** choose **Output video folder** with the native picker
+or paste a writable path. The default is `cache/studio/outputs`. Full music
+videos render to a temporary MP4 in that destination folder, then are renamed
+after validation, including when the folder is on another drive. There is no
+final multi-GB copy from the cache drive. Studio displays the saved path as text
+and offers **Open results folder**. It does not return finished videos through
+Gradio's File/Video components, so it does not create another browser-serving
+copy, transcode a browser preview, or require a download. Open the saved MP4 in
+your local player. On remote/Colab servers the chosen path belongs to the server;
+use a mounted Drive folder when appropriate.
+
+Studio tests
+H.264 NVENC before using it and otherwise uses x264; audio is muxed after frame
+processing without re-encoding the video. The UI serializes preview and export
+and releases preview GPU sessions before starting an export worker.
+`--share` explicitly enables a temporary public Gradio link, useful in Colab;
+the default binds only to localhost. In a remote/Colab session, paste a folder
+path on the server (for example a mounted Drive directory); the native picker
+does not browse files on the remote browser's computer.
+
+Fallin models: **renarchi, CC BY 4.0**,
+[Soft/Strong release](https://github.com/renarchi/Re-SISR/releases/tag/Fallin).
+LaMa: [Carve/LaMa-ONNX](https://huggingface.co/Carve/LaMa-ONNX).
+Preserve model attribution with distributed outputs where applicable.
+
+Validation uses real FFmpeg streams with mock ONNX outputs. Neural model quality
+and CUDA compatibility must also be checked on the intended hardware and footage.
 
 ## Useful options
 
@@ -309,7 +455,7 @@ Start the server with `python -m chatgpt_api` or `python chatgpt_web.py --serve`
 
 `flow_web.py` and `flow_api.py` automate **Google Flow** (`https://flow.google.com/`) in Chrome to animate a local image into a video clip. This uses Flow's website and an existing signed-in Chrome profile; each generation uses Flow credits.
 
-Install the API dependencies with `python -m pip install fastapi uvicorn playwright` and have Google Chrome installed.
+Install dependencies with `python -m pip install -r requirements.txt` and have Google Chrome installed.
 
 ### CLI Usage
 
@@ -355,10 +501,10 @@ The server binds to `127.0.0.1` by default. Keep it local: requests read image f
 
 ## Develop and test
 
-Core rendering uses Python's standard library plus FFmpeg. AI packages are optional.
+Core rendering uses Python's standard library plus FFmpeg. Install the complete dependency set from `requirements.txt`.
 
 ```bash
-python -m pip install -r requirements-watermark.txt
+python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 ```
 
@@ -368,3 +514,8 @@ The tests use synthetic media and mock AI engines; they do **not** validate real
 
 - The project is a media-generation pipeline, not a copyright-removal or licensing tool. Ensure appropriate rights for all input footage and audio.
 - Cache keys account for preprocessing settings and model-file metadata. Keep `cache/` for subsequent mixes, but do not commit generated videos or cache assets.
+
+
+Studio có một nút **Tạo bản mix MP4**: chọn video → khoanh watermark → xem thử vùng sửa → chọn thư mục nhạc → chọn thư mục lưu → xuất. Mặc định dùng toàn bộ playlist; có thể chọn 30 giây để thử. Mỗi lần chạy tạo một bản mix mới, không xuất clip trung gian vào thư mục kết quả và không tự xóa bản mix cũ. Thiết lập ít dùng được gom trong mục nâng cao.
+
+LaMa dùng mask chữ nhật như notebook Colab gốc; chỉ viền pha trộn được nới nhẹ. Preview phóng to vùng watermark để phát hiện vệt vá trước khi render. Khoanh sát toàn bộ logo (chừa khoảng 1–2 pixel); khoanh quá rộng làm AI phải vẽ lại nhiều nền. Model xử lý từng frame nên vẫn có thể mất chi tiết hoặc rung ở vùng sửa, đặc biệt khi nền có chuyển động.
