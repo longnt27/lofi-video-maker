@@ -286,13 +286,46 @@ python lofi_studio.py --device cuda
 ```
 
 Open the localhost URL shown in the terminal. Upload once, select a fixed
-watermark region (or disable cleanup), preview, then export. The desktop
-interface preserves the source FPS and includes its audio if present. It tests
+watermark region (or disable cleanup), and preview the image quality.
+Choose a music folder with the native picker (on the computer running Studio),
+or paste its path. Supported tracks are listed in natural filename order with
+their lengths and the expected playlist duration after crossfades. Subfolders
+are excluded unless explicitly enabled. Shuffle is reproducible by seed.
+
+The same interface has **Export processed clip** and **Export music video**.
+Both use the selected first N seconds of the uploaded clip (default 10, at most
+60) and share a cache keyed by source, models, watermark and output settings.
+Exporting the short clip first lets you inspect it before a long render without
+repeating AI inference. Changing only music or loop/fade settings reuses the
+prepared clip. The short export includes source audio if present; the music
+video replaces it with the selected playlist. Full export length follows the
+playlist after crossfades. The music-video length selector defaults to a
+30-second test; choose 125 seconds to inspect dust or **Full playlist** to render
+the complete soundtrack.
+
+Select seamless looping and opening/closing fades in the music section. Dust is
+off by default; when enabled, Studio creates one reusable dust variant and aligns
+clean/dust section lengths near 60 seconds to the loop's phase. The image preview
+and short export preserve source CFR, including fractional FPS. The existing
+long-video renderer requires integer FPS: for fractional sources select an
+explicit 24/25/30/50/60 FPS in Studio. This changes frame sampling, without motion
+interpolation.
+
+Each export runs in its own Python worker. Stage updates and AI frame progress
+appear in the UI; unknown render-stage progress is not presented as a made-up
+percentage. **Cancel export** stops the worker and its FFmpeg descendants and
+discards partial output while retaining finished AI caches. Pending export
+requests are cancelled too. A failed or cancelled job does not expose an
+incomplete MP4. Diagnostic logs are under `cache/studio/jobs/<job-id>/`.
+
+Studio tests
 H.264 NVENC before using it and otherwise uses x264; audio is muxed after frame
 processing without re-encoding the video. The UI serializes preview and export
-against the same model session. It keeps only the selected Fallin variant loaded.
+and releases preview GPU sessions before starting an export worker.
 `--share` explicitly enables a temporary public Gradio link, useful in Colab;
-the default binds only to localhost. This prepares short clips, not playlists.
+the default binds only to localhost. In a remote/Colab session, paste a folder
+path on the server (for example a mounted Drive directory); the native picker
+does not browse files on the remote browser's computer.
 
 Fallin models: **renarchi, CC BY 4.0**,
 [Soft/Strong release](https://github.com/renarchi/Re-SISR/releases/tag/Fallin).
