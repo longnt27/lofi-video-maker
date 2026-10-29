@@ -297,11 +297,26 @@ Both use the selected first N seconds of the uploaded clip (default 10, at most
 60) and share a cache keyed by source, models, watermark and output settings.
 Exporting the short clip first lets you inspect it before a long render without
 repeating AI inference. Changing only music or loop/fade settings reuses the
-prepared clip. The short export includes source audio if present; the music
-video replaces it with the selected playlist. Full export length follows the
-playlist after crossfades. The music-video length selector defaults to a
-30-second test; choose 125 seconds to inspect dust or **Full playlist** to render
-the complete soundtrack.
+prepared clip. Studio exports one final music-video mix. Original video audio
+is kept quietly beneath the playlist by default (10% linear gain). Under the
+music section, turn off **Giữ tiếng môi trường từ video gốc** for music only, or
+adjust **Âm lượng tiếng gốc (%)** from 0 to 100. A source with no audio falls back
+to music only.
+
+Only the selected source span is extracted into a short lossless ambience loop,
+with up to a 250 ms tail-to-head crossfade. The ambience loops independently of
+the visual transition and is mixed at the final mux, with peak limiting and
+global opening/closing fades on the combined soundtrack. This keeps stream-copy
+video assembly fast and avoids another full-length intermediate soundtrack.
+Original dialogue or music is retained too; this does not isolate sound effects.
+
+Full export length follows the playlist after crossfades. The selector defaults
+to **Toàn bộ playlist**; choose 30 seconds for a quick test or 125 seconds to inspect
+dust before a full export.
+
+The CLI uses the same 10% default: --source-audio-volume 15 changes the gain,
+and --mute-source-audio or --source-audio-volume 0 produces music only. These
+settings affect the final mix, not the short preprocessing output.
 
 Select seamless looping and opening/closing fades in the music section. Dust is
 off by default; when enabled, Studio creates one reusable dust variant and aligns

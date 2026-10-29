@@ -155,7 +155,8 @@ def build_app(home: Path, device: str = "auto"):
 
     def export_mix(path, ann, remove, variant, edge, seconds, grain, tile, fps,
                    music, recursive, shuffle, seed, crossfade, fade, seamless, overlap, dust,
-                   duration_choice, output_dir, progress=gr.Progress()):
+                   duration_choice, output_dir, keep_source_audio, source_audio_volume,
+                   progress=gr.Progress()):
         config = base_config(path, ann, remove, variant, edge, seconds, grain, tile, fps)
         try:
             collect_music(music, recursive, shuffle, int(seed), crossfade)
@@ -168,7 +169,8 @@ def build_app(home: Path, device: str = "auto"):
         preview_seconds = {"30 giây": 30, "125 giây": 125, "Toàn bộ playlist": None}[duration_choice]
         config.update(kind="mix", music=music, recursive=recursive, shuffle=shuffle, seed=int(seed),
             crossfade=crossfade, fade=fade, seamless=seamless, overlap=overlap,
-            dust=dust, preview=preview_seconds, codec="h264", output_dir=output_dir)
+            dust=dust, preview=preview_seconds, codec="h264", output_dir=output_dir,
+            keep_source_audio=bool(keep_source_audio), source_audio_volume=source_audio_volume)
         yield from execute(config, progress)
 
     def pick_music():
@@ -231,6 +233,9 @@ def build_app(home: Path, device: str = "auto"):
                     scan_btn = gr.Button("Đọc lại danh sách")
                     playlist_table = gr.Dataframe(headers=["STT", "Bài nhạc", "Thời lượng"], datatype=["number", "str", "str"], interactive=False)
                 playlist_summary = gr.Textbox(label="Playlist", interactive=False)
+                keep_source_audio = gr.Checkbox(value=True, label="Giữ tiếng môi trường từ video gốc")
+                source_audio_volume = gr.Slider(0, 100, value=10, step=1, label="Âm lượng tiếng gốc (%)")
+                gr.Markdown("Tiếng gốc được hòa nhẹ khi lặp và trộn dưới nhạc. Nếu có lời nói hoặc nhạc trong video gốc, chúng cũng được giữ. Video không có tiếng sẽ chỉ dùng playlist.")
                 gr.Markdown("### 3. Lưu bản mix")
                 output_folder_btn = gr.Button("Chọn thư mục lưu")
                 output_dir = gr.Textbox(value=str(home/"outputs"), label="Thư mục lưu trên máy")
@@ -248,7 +253,7 @@ def build_app(home: Path, device: str = "auto"):
         source.change(first_frame, inputs=source, outputs=[ann, report], concurrency_id="studio", concurrency_limit=1)
         common = [source, ann, remove, variant, edge]
         preview_btn.click(preview, inputs=common+[grain, tile], outputs=[comparison, full, report], concurrency_id="studio", concurrency_limit=1)
-        mix_event = mix_btn.click(export_mix, inputs=common+[seconds, grain, tile, fps, music, recursive, shuffle, seed, crossfade, fade, seamless, overlap, dust, duration_choice, output_dir],
+        mix_event = mix_btn.click(export_mix, inputs=common+[seconds, grain, tile, fps, music, recursive, shuffle, seed, crossfade, fade, seamless, overlap, dust, duration_choice, output_dir, keep_source_audio, source_audio_volume],
                       outputs=[saved_path, report], concurrency_id="studio", concurrency_limit=1)
         cancel_btn.click(runner.cancel, outputs=report, queue=False, cancels=[mix_event])
         folder_btn.click(pick_music, outputs=music, concurrency_id="folder-picker", concurrency_limit=1)

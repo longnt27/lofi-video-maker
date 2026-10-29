@@ -228,6 +228,7 @@ def run_job(config: dict) -> None:
     from fallin_preprocess import media_info
     import lofi_maker as maker
     from seamless_loop import prepare_seamless_master
+    from ambient_audio import prepare_ambient_loop, validate_gain
     job_dir = Path(config["job_dir"])
     scratch = job_dir/"scratch"
     scratch.mkdir(parents=True)
@@ -243,6 +244,7 @@ def run_job(config: dict) -> None:
 
     try:
         status.configure(job_dir/"pipeline.log", total_stages=0)
+        source_gain = validate_gain(float(config.get("source_audio_volume", 10)) / 100)
         playlist = None
         if config["kind"] == "mix":
             emit("Đọc thư mục nhạc")
@@ -256,6 +258,13 @@ def run_job(config: dict) -> None:
             fps = int(info["fps"])
             if info["fps"] != fps or fps not in (24, 25, 30, 50, 60):
                 raise ValueError("Chọn FPS nguyên hỗ trợ trước khi xuất video nhạc dài.")
+            ambient = None
+            if config.get("keep_source_audio", True) and source_gain:
+                emit("Chuẩn bị tiếng môi trường từ video gốc")
+                ambient = prepare_ambient_loop(Path(config["source"]), scratch/"ambient.flac",
+                                               seconds=info["duration"])
+                if ambient is None:
+                    emit("Video gốc không có tiếng; dùng nhạc nền")
             if config["seamless"]:
                 emit("Làm mượt điểm nối loop")
                 prepared = prepare_seamless_master(prepared, fps=fps, overlap=config["overlap"],
@@ -285,10 +294,12 @@ def run_job(config: dict) -> None:
                         section_seconds=section_seconds, dust_variants=1, dust_count=65, dust_fade=min(5, section_seconds/2),
                         dust_opacity=1, dust_fps=15, seed=config["seed"], fade=config["fade"],
                         cache_dir=Path(config["home"]))
-                    maker.render_with_dust(prepared, audio, partial, duration, opts, scratch)
+                    maker.render_with_dust(prepared, audio, partial, duration, opts, scratch,
+                                           ambient_audio=ambient, ambient_volume=source_gain)
                 else:
                     maker.render_fast_without_dust(prepared, audio, partial, duration,
-                        config["fade"], config["codec"], None, fps)
+                        config["fade"], config["codec"], None, fps,
+                        ambient_audio=ambient, ambient_volume=source_gain)
             finally:
                 status.step = original_step
         emit("Kiểm tra MP4 đầu ra")

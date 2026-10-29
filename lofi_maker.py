@@ -31,6 +31,7 @@ import tempfile
 
 import pipeline_status as status
 from seamless_loop import prepare_seamless_master
+from ambient_audio import prepare_ambient_loop, mixed_audio_graph, validate_gain
 
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".aif", ".aiff"}
 SCRIPT_VERSION = "dust-v5.2-quiet-status"
@@ -124,7 +125,8 @@ def combine_music(tracks: list[Path], dest: Path, crossfade: float,
 
 
 def render_full(video: Path, audio: Path, dest: Path, duration: float,
-                fade: float, codec: str, bitrate: str | None) -> None:
+                fade: float, codec: str, bitrate: str | None, *,
+                ambient_audio: Path | None = None, ambient_volume: float = 0.1) -> None:
     """Fallback non-dust path: encode the entire video with global fades."""
     encoder, default_bitrate = encoder_for(codec)
     bitrate = bitrate or default_bitrate
@@ -137,9 +139,12 @@ def render_full(video: Path, audio: Path, dest: Path, duration: float,
         a += [f"afade=t=in:st=0:d={fade:.3f}",
               f"afade=t=out:st={duration-fade:.3f}:d={fade:.3f}"]
     v.append("format=yuv420p")
-    graph = f"[0:v:0]{','.join(v)}[v];[1:a:0]{','.join(a)}[a]"
+    audio_graph = (f"[1:a:0]{','.join(a)}[a]" if ambient_audio is None else
+                   mixed_audio_graph(",".join(a), ambient_volume))
+    graph = f"[0:v:0]{','.join(v)}[v];{audio_graph}"
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
            "-stream_loop", "-1", "-i", str(video), "-i", str(audio),
+           *([] if ambient_audio is None else ["-stream_loop", "-1", "-i", str(ambient_audio)]),
            "-filter_complex", graph, "-map", "[v]", "-map", "[a]",
            "-c:v", encoder, "-b:v", bitrate, "-pix_fmt", "yuv420p",
            "-c:a", "aac", "-b:a", "256k", "-t", f"{duration:.6f}",
@@ -151,7 +156,9 @@ def render_full(video: Path, audio: Path, dest: Path, duration: float,
 
 def render_fast_without_dust(video: Path, audio: Path, dest: Path,
                              duration: float, fade: float, codec: str,
-                             bitrate: str | None, fps: int) -> None:
+                             bitrate: str | None, fps: int, *,
+                             ambient_audio: Path | None = None,
+                             ambient_volume: float = 0.1) -> None:
     """Previous fast mode, kept for --no-dust."""
     encoder, default_bitrate = encoder_for(codec)
     bitrate = bitrate or default_bitrate
@@ -194,7 +201,8 @@ def render_fast_without_dust(video: Path, audio: Path, dest: Path,
             edge(temp / "intro.mp4", loop_frames, True, False)
             edge(temp / "outro.mp4", tail_frames, False, True)
             sections = [temp / "intro.mp4"] + [master] * middle + [temp / "outro.mp4"]
-        assemble_video_and_audio(sections, audio, dest, duration, fade, temp)
+        assemble_video_and_audio(sections, audio, dest, duration, fade, temp,
+                                 ambient_audio=ambient_audio, ambient_volume=ambient_volume)
 
 
 @dataclass(frozen=True)
@@ -373,8 +381,10 @@ def link_or_copy_clip(source: Path, destination: Path) -> None:
 
 
 def assemble_video_and_audio(sections: list[Path], audio: Path, dest: Path,
-                             duration: float, global_fade: float, work: Path) -> None:
-    """Concat via stream copy, then AAC-encode the music with global fades."""
+                             duration: float, global_fade: float, work: Path, *,
+                             ambient_audio: Path | None = None,
+                             ambient_volume: float = 0.1) -> None:
+    """Stream-copy video and mix/fade music plus optional ambience at final mux."""
     aliases = {}
     for p in sections:
         if p not in aliases:
@@ -392,12 +402,16 @@ def assemble_video_and_audio(sections: list[Path], audio: Path, dest: Path,
         audio_filter += [f"afade=t=in:st=0:d={fade:.6f}",
                          f"afade=t=out:st={duration-fade:.6f}:d={fade:.6f}"]
     status.step(f"Assemble final MP4 ({len(sections)} sections + music)")
-    run(["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-         "-safe", "0", "-f", "concat", "-i", str(concat_file),
-         "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0",
-         "-c:v", "copy", "-af", ",".join(audio_filter),
-         "-c:a", "aac", "-b:a", "256k", "-t", f"{duration:.6f}",
-         "-movflags", "+faststart", "-map_metadata", "-1", str(dest)])
+    args = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+            "-safe", "0", "-f", "concat", "-i", str(concat_file), "-i", str(audio)]
+    if ambient_audio is not None:
+        args += ["-stream_loop", "-1", "-i", str(ambient_audio),
+                 "-filter_complex", mixed_audio_graph(",".join(audio_filter), ambient_volume),
+                 "-map", "0:v:0", "-map", "[a]"]
+    else:
+        args += ["-map", "0:v:0", "-map", "1:a:0", "-af", ",".join(audio_filter)]
+    run(args + ["-c:v", "copy", "-c:a", "aac", "-b:a", "256k", "-t", f"{duration:.6f}",
+                "-movflags", "+faststart", "-map_metadata", "-1", str(dest)])
 
 
 def reusable_clip_valid(path: Path, expected_duration: float, fps: int) -> bool:
@@ -453,7 +467,9 @@ def clip_storage_dir(cache: Path | None, work: Path, video: Path,
 
 
 def render_with_dust(video: Path, audio: Path, dest: Path, duration: float,
-                     opts: argparse.Namespace, working: Path) -> None:
+                     opts: argparse.Namespace, working: Path, *,
+                     ambient_audio: Path | None = None,
+                     ambient_volume: float = 0.1) -> None:
     encoder, default_bitrate = encoder_for(opts.codec)
     bitrate = opts.bitrate or default_bitrate
     enc = encoder_args(opts.codec, encoder, bitrate, opts.fps)
@@ -525,7 +541,8 @@ def render_with_dust(video: Path, audio: Path, dest: Path, duration: float,
             encode_edge(source_for(section_count-1), outro, last_frames, opts.fps,
                         opts.fade, fade_in=False, fade_out=True, encoder_opts=enc)
             sections = [intro] + [source_for(i) for i in range(1, section_count-1)] + [outro]
-    assemble_video_and_audio(sections, audio, dest, duration, opts.fade, working)
+    assemble_video_and_audio(sections, audio, dest, duration, opts.fade, working,
+                             ambient_audio=ambient_audio, ambient_volume=ambient_volume)
 
 
 def main() -> None:
@@ -537,6 +554,10 @@ def main() -> None:
     p.add_argument("--output", type=Path, default=Path("lofi_video.mp4"), help="Final MP4 file")
     p.add_argument("--fade", type=float, default=3.0,
                    help="Fade the ENTIRE video/audio at its beginning/end (seconds, default 3)")
+    p.add_argument("--mute-source-audio", action="store_true",
+                   help="Exclude original video audio from the final mix")
+    p.add_argument("--source-audio-volume", type=float, default=10,
+                   help="Original video audio gain in percent, 0..100 (default 10)")
     p.add_argument("--crossfade", type=float, default=2.0,
                    help="Crossfade between tracks (seconds, default 2; 0 means no overlap)")
     p.add_argument("--codec", choices=["h264", "hevc"], default="hevc")
@@ -676,6 +697,10 @@ def main() -> None:
         p.error("Output must be different from the input video")
     if opts.output.suffix.lower() != ".mp4":
         p.error("--output must be an .mp4 file")
+    try:
+        source_gain = validate_gain(opts.source_audio_volume / 100)
+    except ValueError as exc:
+        p.error(str(exc))
     if min(opts.fade, opts.crossfade, opts.dust_fade) < 0:
         p.error("Fade lengths cannot be negative")
     if opts.seamless_loop and opts.loop_overlap <= 0:
@@ -734,6 +759,10 @@ def main() -> None:
         status.action(f"Soundtrack length: {duration/60:.1f} minutes")
         status.step("Prepare short source (AI processing only once)")
         processed_video = prepare_video(opts.video, opts, work)
+        ambient = None
+        if not opts.mute_source_audio and source_gain:
+            ambient = prepare_ambient_loop(opts.video, work / "ambient.flac",
+                                           seconds=media_duration(processed_video, "video"))
         if opts.seamless_loop:
             processed_video = prepare_seamless_master(
                 processed_video, fps=opts.fps, overlap=opts.loop_overlap,
@@ -743,14 +772,17 @@ def main() -> None:
             if opts.mode == "full":
                 status.step("Encode complete video with opening/closing fades")
                 render_full(processed_video, joined, opts.output, duration,
-                            opts.fade, opts.codec, opts.bitrate)
+                            opts.fade, opts.codec, opts.bitrate,
+                            ambient_audio=ambient, ambient_volume=source_gain)
             else:
                 status.step("Render reusable loop and fade sections")
                 render_fast_without_dust(processed_video, joined, opts.output, duration,
-                                         opts.fade, opts.codec, opts.bitrate, opts.fps)
+                                         opts.fade, opts.codec, opts.bitrate, opts.fps,
+                                         ambient_audio=ambient, ambient_volume=source_gain)
         else:
             status.step("Build reusable clean and drifting-dust clips")
-            render_with_dust(processed_video, joined, opts.output, duration, opts, work)
+            render_with_dust(processed_video, joined, opts.output, duration, opts, work,
+                             ambient_audio=ambient, ambient_volume=source_gain)
     status.action(f"Complete: {opts.output.resolve()}")
     status.action(f"Detailed log: {status.path()}")
 
