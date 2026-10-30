@@ -158,13 +158,16 @@ def render_fast_without_dust(video: Path, audio: Path, dest: Path,
                              duration: float, fade: float, codec: str,
                              bitrate: str | None, fps: int, *,
                              ambient_audio: Path | None = None,
-                             ambient_volume: float = 0.1) -> None:
+                             ambient_volume: float = 0.1,
+                             work: Path | None = None) -> None:
     """Previous fast mode, kept for --no-dust."""
     encoder, default_bitrate = encoder_for(codec)
     bitrate = bitrate or default_bitrate
     fade = min(fade, duration / 2)
     enc = encoder_args(codec, encoder, bitrate, fps)
-    with tempfile.TemporaryDirectory(prefix="lofi-plain-") as tmp:
+    temp_parent = work if work is not None else dest.parent
+    temp_parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="lofi-plain-", dir=temp_parent) as tmp:
         temp = Path(tmp)
         master = temp / "master.mp4"
         run(["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
@@ -722,9 +725,12 @@ def main() -> None:
     if not opts.no_dust and opts.fade > opts.section_seconds:
         p.error("--fade must be <= --section-seconds for the dust/stream-copy timeline")
 
+    temp_parent = ((opts.cache_dir or
+                    (opts.prepare_only.parent if opts.prepare_only else opts.output.parent)) / "tmp")
+    temp_parent.mkdir(parents=True, exist_ok=True)
     if opts.prepare_only:
         status.step("Prepare short source (LaMa/upscale as requested)")
-        with tempfile.TemporaryDirectory(prefix="lofi-prepare-") as temp_dir:
+        with tempfile.TemporaryDirectory(prefix="lofi-prepare-", dir=temp_parent) as temp_dir:
             prepared = prepare_video(opts.video, opts, Path(temp_dir))
             if opts.seamless_loop:
                 prepared = prepare_seamless_master(
@@ -750,7 +756,7 @@ def main() -> None:
                 f"({min(track_durations):.1f}s)")
     opts.output.parent.mkdir(parents=True, exist_ok=True)
     status.detail("Tracks: " + ", ".join(song.name for song in tracks))
-    with tempfile.TemporaryDirectory(prefix="lofi-build-") as td:
+    with tempfile.TemporaryDirectory(prefix="lofi-build-", dir=temp_parent) as td:
         work = Path(td)
         joined = work / "music.flac"
         status.step(f"Combine soundtrack ({len(tracks)} songs)")
@@ -778,7 +784,7 @@ def main() -> None:
                 status.step("Render reusable loop and fade sections")
                 render_fast_without_dust(processed_video, joined, opts.output, duration,
                                          opts.fade, opts.codec, opts.bitrate, opts.fps,
-                                         ambient_audio=ambient, ambient_volume=source_gain)
+                                         ambient_audio=ambient, ambient_volume=source_gain, work=work)
         else:
             status.step("Build reusable clean and drifting-dust clips")
             render_with_dust(processed_video, joined, opts.output, duration, opts, work,

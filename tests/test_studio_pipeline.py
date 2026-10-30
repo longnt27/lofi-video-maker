@@ -84,6 +84,7 @@ class StudioPipelineTests(unittest.TestCase):
              patch.object(lofi_maker, "render_fast_without_dust", wraps=lofi_maker.render_fast_without_dust) as render:
             studio.run_job(config)
         self.assertEqual(Path(render.call_args.args[2]).parent, destination)
+        self.assertEqual(render.call_args.kwargs["work"], Path(config["job_dir"])/"scratch")
         self.assertFalse(studio.partial_output(Path(config["output"])).exists())
         state = studio.read_state(Path(config["job_dir"]))
         self.assertEqual(state["status"], "done")

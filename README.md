@@ -519,3 +519,18 @@ The tests use synthetic media and mock AI engines; they do **not** validate real
 Studio có một nút **Tạo bản mix MP4**: chọn video → khoanh watermark → xem thử vùng sửa → chọn thư mục nhạc → chọn thư mục lưu → xuất. Mặc định dùng toàn bộ playlist; có thể chọn 30 giây để thử. Mỗi lần chạy tạo một bản mix mới, không xuất clip trung gian vào thư mục kết quả và không tự xóa bản mix cũ. Thiết lập ít dùng được gom trong mục nâng cao.
 
 LaMa dùng mask chữ nhật như notebook Colab gốc; chỉ viền pha trộn được nới nhẹ. Preview phóng to vùng watermark để phát hiện vệt vá trước khi render. Khoanh sát toàn bộ logo (chừa khoảng 1–2 pixel); khoanh quá rộng làm AI phải vẽ lại nhiều nền. Model xử lý từng frame nên vẫn có thể mất chi tiết hoặc rung ở vùng sửa, đặc biệt khi nền có chuyển động.
+
+
+Studio stores new uploads in the project-local cache/studio/uploads folder and
+runtime temporary files in cache/studio/tmp. The default cache is resolved beside
+lofi_studio.py, independently of the terminal's current working directory. For
+this checkout those locations are on D:. --cache-dir changes the entire Studio
+storage root, including uploads and temporary files.
+
+The configuration applies before Gradio is imported and is inherited by Studio
+workers. It changes only the Studio process environment, not Windows settings.
+Plain rendering uses the job scratch folder, which is cleaned with the job.
+The CLI similarly places build/prepare temp under its explicit cache or output
+folder instead of the system temp directory. Existing files under the old C:
+Gradio/Windows temp folders are not moved or deleted. Restart Studio for the
+new defaults to take effect.

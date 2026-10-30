@@ -299,7 +299,7 @@ def run_job(config: dict) -> None:
                 else:
                     maker.render_fast_without_dust(prepared, audio, partial, duration,
                         config["fade"], config["codec"], None, fps,
-                        ambient_audio=ambient, ambient_volume=source_gain)
+                        ambient_audio=ambient, ambient_volume=source_gain, work=scratch)
             finally:
                 status.step = original_step
         emit("Kiểm tra MP4 đầu ra")

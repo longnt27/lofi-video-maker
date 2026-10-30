@@ -128,6 +128,7 @@ class AmbientAudioTests(unittest.TestCase):
                     "--fade", "0.1", "--seamless-loop", "--loop-overlap", "0.125"]+flags,
                     capture_output=True, text=True, timeout=60)
                 self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+                self.assertTrue((output.parent/"tmp").is_dir())
                 pcm = self.pcm(output)
                 ratio = self.amplitude(pcm, 960)/self.amplitude(pcm, 240)
                 self.assertAlmostEqual(ratio, expected, delta=0.025)

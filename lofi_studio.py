@@ -7,12 +7,38 @@ from __future__ import annotations
 
 import argparse
 import gc
+import os
+import tempfile
 from collections import deque
 import time
 from pathlib import Path
 
 
+DEFAULT_HOME = Path(__file__).resolve().parent/"cache"/"studio"
+
+
+def configure_temp_storage(home: Path) -> Path:
+    """Keep this Studio process's uploads and runtime temp beside its cache.
+
+    This changes only the process environment, not Windows user/system settings.
+    Existing temp files are neither moved nor removed.
+    """
+    home = home.expanduser().resolve()
+    uploads, runtime = home/"uploads", home/"tmp"
+    for folder in (uploads, runtime):
+        folder.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryFile(dir=folder):
+            pass  # Fail clearly on an unwritable cache; do not fall back to C:.
+    os.environ["GRADIO_TEMP_DIR"] = str(uploads)
+    for name in ("TEMP", "TMP", "TMPDIR"):
+        os.environ[name] = str(runtime)
+    # tempfile may already have cached the Windows default before build_app.
+    tempfile.tempdir = str(runtime)
+    return home
+
+
 def build_app(home: Path, device: str = "auto"):
+    home = configure_temp_storage(home)
     import cv2
     import gradio as gr
     import numpy as np
@@ -268,7 +294,8 @@ def build_app(home: Path, device: str = "auto"):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cache-dir", type=Path, default=Path("cache/studio"))
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_HOME,
+                        help="Models, uploads and temporary files (default: cache/studio beside this script)")
     parser.add_argument("--device", choices=["auto", "cuda", "cpu"], default="auto")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
