@@ -10,10 +10,13 @@ import importlib.util
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
+from contextlib import contextmanager
 from fractions import Fraction
 from pathlib import Path
 
@@ -22,6 +25,30 @@ import pipeline_status as status
 VERSION = "lama-fallin-stream-v2"
 LAMA_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
 FALLIN_URL = "https://github.com/renarchi/Re-SISR/releases/download/Fallin/"
+
+
+@contextmanager
+def _stream_tempdir(parent: Path):
+    """Retry cleanup of FFmpeg scratch logs briefly on Windows.
+
+    Windows may still be releasing inherited FFmpeg log handles immediately
+    after terminating a subprocess. Never hide the original inference failure
+    behind a transient cleanup PermissionError.
+    """
+    folder = Path(tempfile.mkdtemp(prefix="fallin-stream-", dir=parent))
+    try:
+        yield folder
+    finally:
+        for attempt in range(8):
+            try:
+                shutil.rmtree(folder)
+                break
+            except FileNotFoundError:
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt == 7:
+                    raise
+                time.sleep(0.1 * (attempt + 1))
 
 
 def media_info(path: Path) -> dict:
@@ -340,8 +367,7 @@ def stream_video(source: Path, dest: Path, processor: FrameProcessor, *, box=Non
         decode += ["-frames:v", str(max(1, round(seconds*float(fps))))]
     decode += ["-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="fallin-stream-", dir=dest.parent) as td:
-        temp = Path(td)
+    with _stream_tempdir(dest.parent) as temp:
         partial = temp / "prepared.mp4"
         encode = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
                   "-s:v", f"{size[0]}x{size[1]}", "-r", str(fps), "-i", "pipe:0"]
@@ -376,8 +402,11 @@ def stream_video(source: Path, dest: Path, processor: FrameProcessor, *, box=Non
                     raise RuntimeError("FFmpeg streaming failed")
             except BaseException as exc:
                 for child in (decoder, encoder):
-                    if child is not None and child.poll() is None:
-                        child.kill()
+                    if child is not None:
+                        if child.poll() is None:
+                            child.kill()
+                        # Wait even when poll() saw a completed process: this
+                        # lets Windows release handles before scratch deletion.
                         child.wait()
                 if isinstance(exc, Exception):
                     dl.seek(0); el.seek(0)
