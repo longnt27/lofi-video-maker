@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "LoFi Flow Music Local",
+  "description": "Create music from the local LoFi tool with the signed-in Flow Music account.",
+  "version": "0.1.0",
+  "permissions": ["alarms", "downloads", "storage"],
+  "host_permissions": ["https://www.flowmusic.app/*", "https://flowmusic.app/*", "http://127.0.0.1/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_title": "LoFi Flow Music", "default_popup": "popup.html"},
+  "content_scripts": [{"matches": ["https://www.flowmusic.app/*", "https://flowmusic.app/*"], "js": ["content.js"], "run_at": "document_idle"}]
+}

@@ -1,5 +1,9 @@
 # Lo-fi Video Maker
 
+The local Studio now includes a **Tự động hóa** tab for the Excel → two-pass
+ChatGPT image → Google Flow → Flow Music → mix → Excel checkbox → Telegram approval
+queue. See [setup, permissions and validation status](AUTOMATION.md).
+
 Create a long-form lo-fi music video from **one seamlessly looping clip** and a **folder of songs**. The tool joins music with optional crossfades, repeats the background until the soundtrack ends, alternates clean and drifting-dust sections, and fades **both audio and video** at the start and end.
 
 It runs from the command line on **macOS and Windows**. AI watermark repair (LaMa) and AI upscaling (Real-ESRGAN NCNN/Vulkan) are optional. Preprocessing operates on the short source clip **once**, before the long mix is assembled.

@@ -216,6 +216,24 @@ def build_app(home: Path, device: str = "auto"):
     def open_result(saved_path, folder):
         return open_output_folder(saved_path, folder, home)
 
+    def save_automation_mask(path, ann):
+        if not path:
+            raise gr.Error("Chọn video Flow mẫu và khoanh vùng watermark trước.")
+        import json
+        import requests
+        info = media_info(Path(path))
+        x, y, w, h = selection(ann, True, info)
+        keys_path = Path(__file__).resolve().parent/"cache"/"automation"/"bridge-keys.json"
+        if not keys_path.is_file():
+            raise gr.Error("Khởi động Studio có bật Tự động hóa trước.")
+        token = json.loads(keys_path.read_text(encoding="utf-8"))["ui"]
+        box = [x/info["width"], y/info["height"], w/info["width"], h/info["height"]]
+        result = requests.post("http://127.0.0.1:7861/api/settings", json={"watermark_box":box,"remove_watermark":True},
+                               headers={"X-LoFi-Token":token}, timeout=10)
+        if not result.ok:
+            raise gr.Error(result.json().get("detail", "Không lưu được vùng watermark."))
+        return "Đã lưu vùng watermark cho quy trình tự động."
+
     def inspect_music(folder, recursive, shuffle, seed, crossfade):
         if not folder or not folder.strip():
             return [], "Chọn thư mục nhạc để xem playlist."
@@ -229,66 +247,71 @@ def build_app(home: Path, device: str = "auto"):
 
     with gr.Blocks(title="LoFi Studio") as app:
         gr.Markdown("## LoFi Studio\nVideo gốc → Xóa watermark → Upscale → Loop + nhạc → **Một bản mix MP4**")
-        with gr.Row():
-            with gr.Column():
-                gr.Markdown("### 1. Video và watermark")
-                source = gr.File(label="Video gốc", file_types=["video"], type="filepath")
-                remove = gr.Checkbox(value=True, label="Xóa watermark bằng LaMa")
-                ann = image_annotator(label="Khoanh sát logo, chừa 1–2 pixel quanh nét chữ; tránh khoanh cả mảng nền", image_type="numpy", single_box=True)
-                gr.Markdown("Frame đầu hiện tự động khi chọn video. LaMa tự vẽ lại vùng bị che nên có thể mất chi tiết hoặc nhấp nháy ở nền phức tạp.")
-                with gr.Accordion("Chất lượng và thiết lập nâng cao", open=False):
-                    variant = gr.Radio(["soft", "strong"], value="soft", label="Upscale Fallin: Soft tự nhiên; Strong sắc hơn")
-                    edge = gr.Dropdown(["Native AI 2x", "1080", "1440", "2160"], value="Native AI 2x", label="Cạnh ngắn đầu ra; tối đa AI 2×")
-                    seconds = gr.Slider(1, 60, value=10, step=1, label="Số giây đầu dùng làm clip nền")
-                    fps = gr.Dropdown(["source", "24", "25", "30", "50", "60"], value="source", label="FPS: source = giữ nguồn")
-                    grain = gr.Slider(0, 5, value=0, step=0.1, label="Grain vùng sửa (không khôi phục chi tiết)")
-                    tile = gr.Checkbox(value=True, label="Chia ô upscale để giảm VRAM")
-                    recursive = gr.Checkbox(value=False, label="Lấy nhạc trong thư mục con")
-                    shuffle = gr.Checkbox(value=False, label="Xáo trộn bài")
-                    seed = gr.Number(value=42, precision=0, label="Seed xáo trộn")
-                    crossfade = gr.Slider(0, 10, value=2, step=0.1, label="Crossfade giữa bài (giây)")
-                    fade = gr.Slider(0, 10, value=3, step=0.1, label="Fade đầu/cuối (giây)")
-                    seamless = gr.Checkbox(value=True, label="Làm mượt điểm nối loop")
-                    overlap = gr.Slider(0.1, 3, value=1, step=0.1, label="Hòa điểm nối (giây)")
-                    dust = gr.Checkbox(value=False, label="Thêm bụi bay (chậm hơn)")
-                preview_btn = gr.Button("Xem thử vùng watermark + upscale")
-                gr.Markdown("### 2. Nhạc")
-                folder_btn = gr.Button("Chọn thư mục nhạc")
-                music = gr.Textbox(label="Thư mục nhạc", placeholder=r"D:\Music\LoFi")
-                with gr.Accordion("Danh sách nhạc", open=False):
-                    scan_btn = gr.Button("Đọc lại danh sách")
-                    playlist_table = gr.Dataframe(headers=["STT", "Bài nhạc", "Thời lượng"], datatype=["number", "str", "str"], interactive=False)
-                playlist_summary = gr.Textbox(label="Playlist", interactive=False)
-                keep_source_audio = gr.Checkbox(value=True, label="Giữ tiếng môi trường từ video gốc")
-                source_audio_volume = gr.Slider(0, 100, value=10, step=1, label="Âm lượng tiếng gốc (%)")
-                gr.Markdown("Tiếng gốc được hòa nhẹ khi lặp và trộn dưới nhạc. Nếu có lời nói hoặc nhạc trong video gốc, chúng cũng được giữ. Video không có tiếng sẽ chỉ dùng playlist.")
-                gr.Markdown("### 3. Lưu bản mix")
-                output_folder_btn = gr.Button("Chọn thư mục lưu")
-                output_dir = gr.Textbox(value=str(home/"outputs"), label="Thư mục lưu trên máy")
-                duration_choice = gr.Radio(["30 giây", "125 giây", "Toàn bộ playlist"], value="Toàn bộ playlist", label="Thời lượng (chọn 30 giây để thử)")
-                gr.Markdown("Mỗi lần bấm xuất chỉ lưu **một bản mix mới** vào thư mục này. Clip xử lý và file tạm không xuất vào đây. Các bản mix từ lần chạy trước vẫn được giữ.")
-                mix_btn = gr.Button("Tạo bản mix MP4", variant="primary")
-                cancel_btn = gr.Button("Hủy", variant="stop")
-            with gr.Column():
-                report = gr.Textbox(label="Trạng thái", interactive=False)
-                comparison = gr.Image(label="Vùng watermark: gốc / đã xử lý")
-                full = gr.Image(label="Toàn khung hình sau xử lý")
-                saved_path = gr.Textbox(label="Bản mix đã lưu", interactive=False)
-                open_folder_btn = gr.Button("Mở thư mục kết quả")
-                gr.Markdown("Lưu thẳng trên máy, không cần tải về. Fallin: renarchi, CC BY 4.0.")
-        source.change(first_frame, inputs=source, outputs=[ann, report], concurrency_id="studio", concurrency_limit=1)
-        common = [source, ann, remove, variant, edge]
-        preview_btn.click(preview, inputs=common+[grain, tile], outputs=[comparison, full, report], concurrency_id="studio", concurrency_limit=1)
-        mix_event = mix_btn.click(export_mix, inputs=common+[seconds, grain, tile, fps, music, recursive, shuffle, seed, crossfade, fade, seamless, overlap, dust, duration_choice, output_dir, keep_source_audio, source_audio_volume],
-                      outputs=[saved_path, report], concurrency_id="studio", concurrency_limit=1)
-        cancel_btn.click(runner.cancel, outputs=report, queue=False, cancels=[mix_event])
-        folder_btn.click(pick_music, outputs=music, concurrency_id="folder-picker", concurrency_limit=1)
-        output_folder_btn.click(pick_output, outputs=output_dir, concurrency_id="folder-picker", concurrency_limit=1)
-        open_folder_btn.click(open_result, inputs=[saved_path, output_dir], outputs=report, queue=False)
-        music_inputs = [music, recursive, shuffle, seed, crossfade]
-        scan_btn.click(inspect_music, inputs=music_inputs, outputs=[playlist_table, playlist_summary])
-        for control in music_inputs:
-            control.change(inspect_music, inputs=music_inputs, outputs=[playlist_table, playlist_summary], trigger_mode="always_last")
+        with gr.Tab("Xử lý video"):
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("### 1. Video và watermark")
+                    source = gr.File(label="Video gốc", file_types=["video"], type="filepath")
+                    remove = gr.Checkbox(value=True, label="Xóa watermark bằng LaMa")
+                    ann = image_annotator(label="Khoanh sát logo, chừa 1–2 pixel quanh nét chữ; tránh khoanh cả mảng nền", image_type="numpy", single_box=True)
+                    gr.Markdown("Frame đầu hiện tự động khi chọn video. LaMa tự vẽ lại vùng bị che nên có thể mất chi tiết hoặc nhấp nháy ở nền phức tạp.")
+                    with gr.Accordion("Chất lượng và thiết lập nâng cao", open=False):
+                        variant = gr.Radio(["soft", "strong"], value="soft", label="Upscale Fallin: Soft tự nhiên; Strong sắc hơn")
+                        edge = gr.Dropdown(["Native AI 2x", "1080", "1440", "2160"], value="Native AI 2x", label="Cạnh ngắn đầu ra; tối đa AI 2×")
+                        seconds = gr.Slider(1, 60, value=10, step=1, label="Số giây đầu dùng làm clip nền")
+                        fps = gr.Dropdown(["source", "24", "25", "30", "50", "60"], value="source", label="FPS: source = giữ nguồn")
+                        grain = gr.Slider(0, 5, value=0, step=0.1, label="Grain vùng sửa (không khôi phục chi tiết)")
+                        tile = gr.Checkbox(value=True, label="Chia ô upscale để giảm VRAM")
+                        recursive = gr.Checkbox(value=False, label="Lấy nhạc trong thư mục con")
+                        shuffle = gr.Checkbox(value=False, label="Xáo trộn bài")
+                        seed = gr.Number(value=42, precision=0, label="Seed xáo trộn")
+                        crossfade = gr.Slider(0, 10, value=2, step=0.1, label="Crossfade giữa bài (giây)")
+                        fade = gr.Slider(0, 10, value=3, step=0.1, label="Fade đầu/cuối (giây)")
+                        seamless = gr.Checkbox(value=True, label="Làm mượt điểm nối loop")
+                        overlap = gr.Slider(0.1, 3, value=1, step=0.1, label="Hòa điểm nối (giây)")
+                        dust = gr.Checkbox(value=False, label="Thêm bụi bay (chậm hơn)")
+                    preview_btn = gr.Button("Xem thử vùng watermark + upscale")
+                    save_mask_btn = gr.Button("Lưu vùng watermark cho tự động hóa")
+                    gr.Markdown("### 2. Nhạc")
+                    folder_btn = gr.Button("Chọn thư mục nhạc")
+                    music = gr.Textbox(label="Thư mục nhạc", placeholder=r"D:\Music\LoFi")
+                    with gr.Accordion("Danh sách nhạc", open=False):
+                        scan_btn = gr.Button("Đọc lại danh sách")
+                        playlist_table = gr.Dataframe(headers=["STT", "Bài nhạc", "Thời lượng"], datatype=["number", "str", "str"], interactive=False)
+                    playlist_summary = gr.Textbox(label="Playlist", interactive=False)
+                    keep_source_audio = gr.Checkbox(value=True, label="Giữ tiếng môi trường từ video gốc")
+                    source_audio_volume = gr.Slider(0, 100, value=10, step=1, label="Âm lượng tiếng gốc (%)")
+                    gr.Markdown("Tiếng gốc được hòa nhẹ khi lặp và trộn dưới nhạc. Nếu có lời nói hoặc nhạc trong video gốc, chúng cũng được giữ. Video không có tiếng sẽ chỉ dùng playlist.")
+                    gr.Markdown("### 3. Lưu bản mix")
+                    output_folder_btn = gr.Button("Chọn thư mục lưu")
+                    output_dir = gr.Textbox(value=str(home/"outputs"), label="Thư mục lưu trên máy")
+                    duration_choice = gr.Radio(["30 giây", "125 giây", "Toàn bộ playlist"], value="Toàn bộ playlist", label="Thời lượng (chọn 30 giây để thử)")
+                    gr.Markdown("Mỗi lần bấm xuất chỉ lưu **một bản mix mới** vào thư mục này. Clip xử lý và file tạm không xuất vào đây. Các bản mix từ lần chạy trước vẫn được giữ.")
+                    mix_btn = gr.Button("Tạo bản mix MP4", variant="primary")
+                    cancel_btn = gr.Button("Hủy", variant="stop")
+                with gr.Column():
+                    report = gr.Textbox(label="Trạng thái", interactive=False)
+                    comparison = gr.Image(label="Vùng watermark: gốc / đã xử lý")
+                    full = gr.Image(label="Toàn khung hình sau xử lý")
+                    saved_path = gr.Textbox(label="Bản mix đã lưu", interactive=False)
+                    open_folder_btn = gr.Button("Mở thư mục kết quả")
+                    gr.Markdown("Lưu thẳng trên máy, không cần tải về. Fallin: renarchi, CC BY 4.0.")
+            source.change(first_frame, inputs=source, outputs=[ann, report], concurrency_id="studio", concurrency_limit=1)
+            save_mask_btn.click(save_automation_mask, inputs=[source, ann], outputs=report, queue=False)
+            common = [source, ann, remove, variant, edge]
+            preview_btn.click(preview, inputs=common+[grain, tile], outputs=[comparison, full, report], concurrency_id="studio", concurrency_limit=1)
+            mix_event = mix_btn.click(export_mix, inputs=common+[seconds, grain, tile, fps, music, recursive, shuffle, seed, crossfade, fade, seamless, overlap, dust, duration_choice, output_dir, keep_source_audio, source_audio_volume],
+                          outputs=[saved_path, report], concurrency_id="studio", concurrency_limit=1)
+            cancel_btn.click(runner.cancel, outputs=report, queue=False, cancels=[mix_event])
+            folder_btn.click(pick_music, outputs=music, concurrency_id="folder-picker", concurrency_limit=1)
+            output_folder_btn.click(pick_output, outputs=output_dir, concurrency_id="folder-picker", concurrency_limit=1)
+            open_folder_btn.click(open_result, inputs=[saved_path, output_dir], outputs=report, queue=False)
+            music_inputs = [music, recursive, shuffle, seed, crossfade]
+            scan_btn.click(inspect_music, inputs=music_inputs, outputs=[playlist_table, playlist_summary])
+            for control in music_inputs:
+                control.change(inspect_music, inputs=music_inputs, outputs=[playlist_table, playlist_summary], trigger_mode="always_last")
+        with gr.Tab("Tự động hóa"):
+            gr.HTML('<iframe src="http://127.0.0.1:7861" title="Tự động hóa LoFi" style="width:100%;height:1800px;border:0;border-radius:12px"></iframe>')
     return app
 
 
@@ -300,7 +323,11 @@ def main():
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7860)
     parser.add_argument("--share", action="store_true", help="Explicitly enable a public Gradio share link")
+    parser.add_argument("--no-automation", action="store_true", help="Run video processing without the browser bridge")
     args = parser.parse_args()
+    if not args.no_automation:
+        from automation_bridge import ensure_running
+        ensure_running()
     build_app(args.cache_dir, args.device).queue(default_concurrency_limit=1).launch(
         server_name=args.host, server_port=args.port, share=args.share, show_error=True, theme="soft")
 
