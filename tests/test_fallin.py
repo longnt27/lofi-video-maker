@@ -165,6 +165,68 @@ class StreamingTests(unittest.TestCase):
             add_dll.assert_called_once_with(str(dll_dir.resolve()))
             self.assertEqual(os.environ["PATH"].split(os.pathsep)[0], str(dll_dir.resolve()))
 
+    def test_auto_cuda_falls_back_if_session_cannot_initialize(self):
+        from unittest.mock import Mock
+        import sys
+        runtime = types.ModuleType("onnxruntime")
+        runtime.__version__ = "fake"
+        runtime.preload_dlls = Mock()
+        runtime.get_available_providers = lambda: [
+            "CUDAExecutionProvider", "CPUExecutionProvider"]
+        runtime.SessionOptions = Mock()
+        cpu = Mock()
+        cpu.get_providers.return_value = ["CPUExecutionProvider"]
+        def open_model(path, *, sess_options, providers):
+            if "CUDAExecutionProvider" in providers:
+                raise RuntimeError("CUDA driver is unavailable")
+            return cpu
+        runtime.InferenceSession = Mock(side_effect=open_model)
+        with patch.dict(sys.modules, {"onnxruntime": runtime}):
+            proc = fallin.FrameProcessor(self.root, device="auto")
+            with patch.object(proc, "weight", side_effect=lambda kind:
+                              self.root / ("fp16.onnx" if proc.device == "cuda" else "fp32.onnx")):
+                self.assertIs(proc.session("fallin"), cpu)
+        self.assertEqual(proc.device, "cpu")
+        self.assertEqual(proc.requested_device, "auto")
+        self.assertEqual(runtime.InferenceSession.call_count, 2)
+        self.assertTrue(any("fp32.onnx" in str(call.args[0])
+                            for call in runtime.InferenceSession.call_args_list))
+
+    def test_auto_cuda_falls_back_if_inference_fails_after_init(self):
+        from unittest.mock import Mock
+        import sys
+        runtime = types.ModuleType("onnxruntime")
+        runtime.__version__ = "fake"
+        runtime.preload_dlls = Mock()
+        runtime.get_available_providers = lambda: [
+            "CUDAExecutionProvider", "CPUExecutionProvider"]
+        runtime.SessionOptions = Mock()
+        gpu = Mock()
+        gpu.get_providers.return_value = ["CUDAExecutionProvider"]
+        gpu.get_inputs.return_value = [types.SimpleNamespace(
+            shape=[1, 3, "h", "w"], type="tensor(float16)", name="input")]
+        gpu.run.side_effect = RuntimeError("CUDA allocation failed")
+        cpu = Mock()
+        cpu.get_providers.return_value = ["CPUExecutionProvider"]
+        cpu.get_inputs.return_value = [types.SimpleNamespace(
+            shape=[1, 3, "h", "w"], type="tensor(float)", name="input")]
+        cpu.run.side_effect = lambda unused, inputs: [
+            self.np.repeat(self.np.repeat(inputs["input"], 2, axis=2), 2, axis=3)]
+        runtime.InferenceSession = Mock(
+            side_effect=lambda path, *, sess_options, providers:
+            gpu if "CUDAExecutionProvider" in providers else cpu)
+        with patch.dict(sys.modules, {"onnxruntime": runtime}):
+            proc = fallin.FrameProcessor(self.root, device="auto")
+            with patch.object(proc, "weight", side_effect=lambda kind:
+                              self.root / ("fp16.onnx" if proc.device == "cuda" else "fp32.onnx")):
+                image = proc.infer(self.np.zeros((16, 16, 3), self.np.uint8))
+        self.assertEqual(image.shape, (32, 32, 3))
+        self.assertEqual(proc.device, "cpu")
+        gpu.run.assert_called_once()
+        cpu.run.assert_called_once()
+        self.assertIn("CPUExecutionProvider",
+                      runtime.InferenceSession.call_args.kwargs["providers"])
+
     def test_cache_reuses_inference_and_invalidates_settings(self):
         weight = self.root/"model.onnx"
         weight.write_bytes(b"mock model")
