@@ -118,6 +118,7 @@ class AmbientAudioTests(unittest.TestCase):
         shutil.copy2(self.music, tracks/"track.wav")
         for label, flags, expected in [
                 ("default", [], 0.1),
+                ("enabled", ["--source-audio-volume", "10"], 0.1),
                 ("muted", ["--mute-source-audio"], 0),
                 ("custom-full", ["--source-audio-volume", "25", "--mode", "full"], 0.25)]:
             with self.subTest(label=label):
@@ -139,7 +140,7 @@ class AmbientAudioTests(unittest.TestCase):
         tracks.mkdir()
         shutil.copy2(self.music, tracks/"track.wav")
         for index, (enabled, volume, dust) in enumerate(
-                [(True, 10, False), (False, 10, False), (True, 0, False), (True, 10, True)]):
+                [(None, 10, False), (True, 10, False), (False, 10, False), (True, 0, False), (True, 10, True)]):
             with self.subTest(enabled=enabled, volume=volume, dust=dust):
                 folder = self.root/f"job-{index}"
                 folder.mkdir()
@@ -151,13 +152,17 @@ class AmbientAudioTests(unittest.TestCase):
                     crossfade=0, fade=0.1, seamless=True, overlap=0.125,
                     dust=dust, preview=None, codec="h264",
                     keep_source_audio=enabled, source_audio_volume=volume)
+                if enabled is None:
+                    config.pop("keep_source_audio")
+                    config.pop("source_audio_volume")
+                expected_enabled = enabled is not False
                 with patch.object(studio, "prepare_clip", return_value=self.source), \
                      patch.object(ambient, "prepare_ambient_loop", wraps=ambient.prepare_ambient_loop) as prepare:
                     studio.run_job(config)
-                self.assertEqual(prepare.call_count, int(enabled and volume > 0))
+                self.assertEqual(prepare.call_count, int(expected_enabled and volume > 0))
                 self.assertEqual(studio.read_state(folder)["status"], "done")
                 ratio = self.amplitude(self.pcm(output), 960)/self.amplitude(self.pcm(output), 240)
-                self.assertAlmostEqual(ratio, volume/100 if enabled else 0, delta=0.025)
+                self.assertAlmostEqual(ratio, volume/100 if expected_enabled else 0, delta=0.025)
                 self.assertFalse((folder/"scratch").exists())
 
 

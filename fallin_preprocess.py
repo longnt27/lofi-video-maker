@@ -10,10 +10,13 @@ import importlib.util
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
+from contextlib import contextmanager
 from fractions import Fraction
 from pathlib import Path
 
@@ -22,6 +25,30 @@ import pipeline_status as status
 VERSION = "lama-fallin-stream-v2"
 LAMA_URL = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
 FALLIN_URL = "https://github.com/renarchi/Re-SISR/releases/download/Fallin/"
+
+
+@contextmanager
+def _stream_tempdir(parent: Path):
+    """Retry cleanup of FFmpeg scratch logs briefly on Windows.
+
+    Windows may still be releasing inherited FFmpeg log handles immediately
+    after terminating a subprocess. Never hide the original inference failure
+    behind a transient cleanup PermissionError.
+    """
+    folder = Path(tempfile.mkdtemp(prefix="fallin-stream-", dir=parent))
+    try:
+        yield folder
+    finally:
+        for attempt in range(8):
+            try:
+                shutil.rmtree(folder)
+                break
+            except FileNotFoundError:
+                break
+            except PermissionError:
+                if os.name != "nt" or attempt == 7:
+                    raise
+                time.sleep(0.1 * (attempt + 1))
 
 
 def media_info(path: Path) -> dict:
@@ -97,6 +124,7 @@ class FrameProcessor:
         self.model_dir, self.variant, self.tile = Path(model_dir), variant, tile
         self.lama_path = Path(lama_path) if lama_path else None
         self.sessions = {}
+        self.requested_device = device
         self.preload_error = None
         self._dll_handles = []
         if hasattr(ort, "preload_dlls") and device != "cpu":
@@ -114,7 +142,7 @@ class FrameProcessor:
                         os.environ["PATH"] = os.pathsep.join(additions+current)
                     if hasattr(os, "add_dll_directory"):
                         self._dll_handles = [os.add_dll_directory(p) for p in bins]
-                # Prefer the runtime packages installed by requirements.txt,
+                # Prefer the runtime packages installed by requirements-cuda.txt,
                 # not a different CUDA version from another app or global PATH.
                 ort.preload_dlls(directory="")
             except (RuntimeError, OSError) as exc:
@@ -151,24 +179,51 @@ class FrameProcessor:
             partial.unlink(missing_ok=True)
         return dest
 
+    def _fallback_to_cpu(self, error: Exception, stage: str) -> bool:
+        """Auto mode retries CPU/FP32 when CUDA session setup or inference fails.
+
+        InferenceSession may advertise CUDA but fail only after its first run;
+        checking get_available_providers() alone is not sufficient.
+        Explicit --fallin-device cuda remains strict and never silently falls
+        back, so a requested GPU run cannot masquerade as successful CUDA.
+        """
+        if self.requested_device != "auto" or self.device != "cuda":
+            return False
+        status.action(
+            f"CUDA {stage} failed ({str(error)[:160]}); retrying CPU with FP32 weights"
+        )
+        self.sessions.clear()
+        self.device = "cpu"
+        return True
+
     def session(self, kind: str):
-        if kind not in self.sessions:
+        if kind in self.sessions:
+            return self.sessions[kind]
+        while True:
             providers = (["CUDAExecutionProvider", "CPUExecutionProvider"]
                          if self.device == "cuda" else ["CPUExecutionProvider"])
             options = self.ort.SessionOptions()
             options.intra_op_num_threads = 2
-            sess = self.ort.InferenceSession(str(self.weight(kind)), sess_options=options, providers=providers)
-            sess.disable_fallback()
-            if self.device == "cuda" and "CUDAExecutionProvider" not in sess.get_providers():
-                extra = f" Preload error: {self.preload_error}" if self.preload_error else ""
-                raise RuntimeError(
-                    f"ONNX Runtime {self.ort.__version__} could not initialize CUDA. "
-                    f"Python: {sys.executable}. Install the pinned CUDA/cuDNN runtime with "
-                    f'"{sys.executable}" -m pip install -r requirements.txt, '
-                    "then restart LoFi Studio. Select --device cpu for a CPU-only run."
-                    + extra)
-            self.sessions[kind] = sess
-        return self.sessions[kind]
+            try:
+                sess = self.ort.InferenceSession(
+                    str(self.weight(kind)), sess_options=options, providers=providers
+                )
+                sess.disable_fallback()
+                if self.device == "cuda" and "CUDAExecutionProvider" not in sess.get_providers():
+                    extra = f" Preload error: {self.preload_error}" if self.preload_error else ""
+                    raise RuntimeError(
+                        f"ONNX Runtime {self.ort.__version__} could not initialize CUDA. "
+                        f"Python: {sys.executable}. Install the pinned CUDA/cuDNN runtime with "
+                        f'"{sys.executable}" -m pip install -r requirements-cuda.txt '
+                        "then restart LoFi Studio. Select --device cpu for a CPU-only run."
+                        + extra
+                    )
+                self.sessions[kind] = sess
+                return sess
+            except Exception as exc:
+                if self._fallback_to_cpu(exc, f"{kind} session initialization"):
+                    continue
+                raise
 
     def crop_settings(self, box, width: int, height: int):
         cv2, np = self.cv2, self.np
@@ -197,7 +252,12 @@ class FrameProcessor:
         resized_mask = cv2.resize(mask, (512, 512), interpolation=cv2.INTER_NEAREST)
         inputs = {"image": np.ascontiguousarray(image.transpose(2, 0, 1)[None], dtype=np.float32)/255,
                   "mask": (resized_mask > 127).astype(np.float32)[None, None]}
-        out = self.session("lama").run(None, inputs)[0]
+        try:
+            out = self.session("lama").run(None, inputs)[0]
+        except Exception as exc:
+            if not self._fallback_to_cpu(exc, "LaMa inference"):
+                raise
+            out = self.session("lama").run(None, inputs)[0]
         if out.shape != (1, 3, 512, 512) or not np.isfinite(out).all():
             raise RuntimeError("Invalid LaMa output")
         recovered = np.clip(out[0].transpose(1, 2, 0), 0, 255).astype(np.uint8)
@@ -220,7 +280,14 @@ class FrameProcessor:
         dtype = np.float16 if inputs[0].type == "tensor(float16)" else np.float32
         rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
         tensor = np.ascontiguousarray(rgb.transpose(2, 0, 1)[None], dtype=dtype)/np.array(255, dtype=dtype)
-        out = session.run(None, {inputs[0].name: tensor})[0]
+        try:
+            out = session.run(None, {inputs[0].name: tensor})[0]
+        except Exception as exc:
+            if not self._fallback_to_cpu(exc, "Fallin inference"):
+                raise
+            # A CPU model may require float32, whereas CUDA had an FP16 model.
+            # Rebuild the tensor through infer() after switching providers.
+            return self.infer(frame)
         expected = (1, 3, padded.shape[0]*2, padded.shape[1]*2)
         if out.shape != expected or not np.isfinite(out).all():
             raise RuntimeError(f"Invalid Fallin output: {out.shape}, expected {expected}")
@@ -300,8 +367,7 @@ def stream_video(source: Path, dest: Path, processor: FrameProcessor, *, box=Non
         decode += ["-frames:v", str(max(1, round(seconds*float(fps))))]
     decode += ["-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1"]
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="fallin-stream-", dir=dest.parent) as td:
-        temp = Path(td)
+    with _stream_tempdir(dest.parent) as temp:
         partial = temp / "prepared.mp4"
         encode = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24",
                   "-s:v", f"{size[0]}x{size[1]}", "-r", str(fps), "-i", "pipe:0"]
@@ -336,8 +402,11 @@ def stream_video(source: Path, dest: Path, processor: FrameProcessor, *, box=Non
                     raise RuntimeError("FFmpeg streaming failed")
             except BaseException as exc:
                 for child in (decoder, encoder):
-                    if child is not None and child.poll() is None:
-                        child.kill()
+                    if child is not None:
+                        if child.poll() is None:
+                            child.kill()
+                        # Wait even when poll() saw a completed process: this
+                        # lets Windows release handles before scratch deletion.
                         child.wait()
                 if isinstance(exc, Exception):
                     dl.seek(0); el.seek(0)

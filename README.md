@@ -228,27 +228,36 @@ Install all project dependencies with the same Python used to run the tool:
 python -m pip install -r requirements.txt
 ```
 
-This single file includes Studio, preprocessing, Chrome automation and test
-dependencies. Windows/Linux use the ONNX GPU wheel, which also supports
-`--fallin-device cpu`; macOS uses the CPU wheel. Do not install both ONNX
+This installs the portable **CPU ONNX Runtime** on macOS, Windows and Linux.
+NVIDIA/CUDA is deliberately optional, avoiding gigabytes of GPU runtime
+downloads on computers without a supported GPU. Do not install both ONNX
 Runtime wheels into the same environment.
 
-GPU inference requires CUDA and cuDNN runtime libraries compatible with the
-installed `onnxruntime-gpu` build. The unified requirements pin ONNX Runtime
-1.26.0 (CUDA 12) and install its CUDA/cuDNN runtime packages, so a clean venv
-does not depend on another application's DLLs. Restart Studio after installing
-or changing native libraries. A compatible NVIDIA graphics driver is still required.
+**Optional NVIDIA acceleration (Windows/Linux only):** in the active venv,
+after installing the main requirements, replace the CPU runtime with the
+CUDA 12 build:
+
+```powershell
+python -m pip uninstall -y onnxruntime
+python -m pip install -r requirements-cuda.txt
+```
+
+CUDA inference requires a compatible NVIDIA driver and CUDA/cuDNN runtime
+libraries. The optional GPU requirements install the matching CUDA/cuDNN
+Python packages; restart Studio after switching runtimes.
 See the [ONNX Runtime CUDA compatibility table](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html).
 `--fallin-device cuda` fails clearly if a CUDA session cannot initialize;
-`auto` selects CUDA when advertised by ONNX Runtime, otherwise CPU. CPU uses
+`auto` tries CUDA when advertised by ONNX Runtime and retries CPU if CUDA
+initialization or frame inference fails. Explicit `cuda` mode fails rather than
+silently falling back. CPU uses
 the FP32 Fallin export; CUDA uses FP16. Models download on first use.
 
 ### Prepare a short clip or build the full mix
 
 ```powershell
-python lofi_maker.py --video data/video.mp4 --pick-watermark --upscale-engine fallin --upscale 2 --fallin-model soft --fallin-device cuda --prepare-only prepared.mp4 --fps 24 --cache-dir ./cache
+python lofi_maker.py --video data/video.mp4 --pick-watermark --upscale-engine fallin --upscale 2 --fallin-model soft --fallin-device auto --prepare-only prepared.mp4 --fps 24 --cache-dir ./cache
 
-python lofi_maker.py --video data/video.mp4 --music data/musics --output final.mp4 --upscale-engine fallin --upscale 2 --fallin-model soft --fallin-device cuda --seamless-loop --loop-overlap 3 --fps 24 --codec h264 --cache-dir ./cache
+python lofi_maker.py --video data/video.mp4 --music data/musics --output final.mp4 --upscale-engine fallin --upscale 2 --fallin-model soft --fallin-device auto --seamless-loop --loop-overlap 3 --fps 24 --codec h264 --cache-dir ./cache
 ```
 
 Add `--watermark-box X,Y,W,H` to the full mix if LaMa cleanup is needed.
@@ -282,7 +291,7 @@ variable timestamp spacing rather than silently retiming audio.
 
 ```powershell
 python -m pip install -r requirements.txt
-python lofi_studio.py --device cuda
+python lofi_studio.py --device auto
 ```
 
 Open the localhost URL shown in the terminal. Upload once, select a fixed
