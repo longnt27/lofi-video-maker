@@ -1,0 +1,16 @@
+# Portable setup for preprocessing, Studio, Chrome automation and project tests.
+numpy>=1.24
+opencv-python>=4.8
+# Portable CPU runtime (macOS, Windows and Linux).
+# GPU users can replace it with requirements-cuda.txt; do NOT install both wheels.
+onnxruntime>=1.21
+gradio>=6.14,<7
+gradio-image-annotation==0.5.6
+fastapi>=0.115,<1
+uvicorn>=0.30
+playwright>=1.45
+requests>=2.31
+pytest>=8
+pytest-asyncio>=0.23
+httpx>=0.27,<1
+psutil>=5.9

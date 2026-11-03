@@ -93,7 +93,7 @@ def extract_first_frame(video: Path):
     try:
         import cv2
     except ImportError as exc:
-        raise RuntimeError("Watermark removal requires: pip install opencv-python numpy onnxruntime") from exc
+        raise RuntimeError("Watermark removal requires: python -m pip install -r requirements.txt") from exc
     cap = cv2.VideoCapture(str(video))
     try:
         ok, frame = cap.read()
@@ -191,7 +191,7 @@ def make_inpainter(model_path: Path, provider: str = "cpu"):
         import cv2
         import numpy as np
     except ImportError as exc:
-        raise RuntimeError("LaMa dependencies missing. Run: python -m pip install -r requirements-watermark.txt") from exc
+        raise RuntimeError("LaMa dependencies missing. Run: python -m pip install -r requirements.txt") from exc
     if hasattr(ort, "set_default_logger_severity"):
         ort.set_default_logger_severity(3)
     providers = selected_lama_providers(ort.get_available_providers(), provider)
@@ -226,7 +226,7 @@ def inpaint_video(input_path: Path, output_path: Path, box: tuple[int, int, int,
         import cv2
         import numpy as np
     except ImportError as exc:
-        raise RuntimeError("Watermark removal requires: pip install opencv-python numpy onnxruntime") from exc
+        raise RuntimeError("Watermark removal requires: python -m pip install -r requirements.txt") from exc
     info = video_info(input_path)
     wvideo, hvideo = info["width"], info["height"]
     total_frames = info["frames"] or round(info["duration"] * fps)
@@ -559,6 +559,9 @@ def upscale_clip(source: Path, output: Path, fps: int, scale: int,
 
 def prepare_video(source: Path, opts, work: Path) -> Path:
     """Preprocess once and return video path for the existing dust/music renderer."""
+    if opts.upscale_engine == "fallin":
+        from fallin_preprocess import prepare_fallin
+        return prepare_fallin(source, opts, work)
     box = opts.watermark_box
     has_preprocessing = bool(box or opts.upscale != 1 or opts.denoise or opts.motion_interpolation)
     if not has_preprocessing:
