@@ -244,7 +244,7 @@ def run_job(config: dict) -> None:
 
     try:
         status.configure(job_dir/"pipeline.log", total_stages=0)
-        source_gain = validate_gain(float(config.get("source_audio_volume", 10)) / 100)
+        source_gain = validate_gain(float(config.get("source_audio_volume", 0)) / 100)
         playlist = None
         if config["kind"] == "mix":
             emit("Đọc thư mục nhạc")
@@ -259,7 +259,7 @@ def run_job(config: dict) -> None:
             if info["fps"] != fps or fps not in (24, 25, 30, 50, 60):
                 raise ValueError("Chọn FPS nguyên hỗ trợ trước khi xuất video nhạc dài.")
             ambient = None
-            if config.get("keep_source_audio", True) and source_gain:
+            if config.get("keep_source_audio", False) and source_gain:
                 emit("Chuẩn bị tiếng môi trường từ video gốc")
                 ambient = prepare_ambient_loop(Path(config["source"]), scratch/"ambient.flac",
                                                seconds=info["duration"])
