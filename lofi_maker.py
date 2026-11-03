@@ -556,8 +556,8 @@ def main() -> None:
                    help="Fade the ENTIRE video/audio at its beginning/end (seconds, default 3)")
     p.add_argument("--mute-source-audio", action="store_true",
                    help="Exclude original video audio from the final mix")
-    p.add_argument("--source-audio-volume", type=float, default=10,
-                   help="Original video audio gain in percent, 0..100 (default 10)")
+    p.add_argument("--source-audio-volume", type=float, default=0,
+                   help="Original video audio gain in percent, 0..100 (default 0; off unless enabled)")
     p.add_argument("--crossfade", type=float, default=2.0,
                    help="Crossfade between tracks (seconds, default 2; 0 means no overlap)")
     p.add_argument("--codec", choices=["h264", "hevc"], default="hevc")
