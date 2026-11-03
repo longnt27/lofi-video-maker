@@ -12,6 +12,21 @@ SITE = 'https://www.flowmusic.app/'
 DEFAULT_ACCOUNT = 'dinhquocviet0411@gmail.com'
 
 
+def chrome_profiles():
+    """Only profile display metadata; never read cookies or credentials."""
+    if sys.platform == 'win32':
+        base=Path(os.environ['LOCALAPPDATA'])/'Google/Chrome/User Data'
+    elif sys.platform == 'darwin':
+        base=Path.home()/'Library/Application Support/Google/Chrome'
+    else:
+        base=Path.home()/'.config/google-chrome'
+    try:
+        info=json.loads((base/'Local State').read_text(encoding='utf-8')).get('profile',{}).get('info_cache',{})
+        return [{'directory':folder,'name':value.get('name') or folder,'account':value.get('user_name') or ''}
+                for folder,value in sorted(info.items(),key=lambda pair:pair[1].get('name','').casefold())]
+    except (OSError,ValueError,KeyError):return []
+
+
 def chrome_executable():
     candidates = [Path(os.environ['FLOW_MUSIC_CHROME'])] if os.environ.get('FLOW_MUSIC_CHROME') else []
     for variable in ('PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA'):

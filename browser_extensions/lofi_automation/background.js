@@ -2,9 +2,17 @@ importScripts('config.js');
 let polling=false, releasing=false, active=null, watch=null;
 const frames=new Map();
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
+let identityPromise;
+function identity(){
+  if(!identityPromise)identityPromise=chrome.storage.local.get('installationId').then(async saved=>{
+    const id=saved.installationId||crypto.randomUUID();
+    if(!saved.installationId)await chrome.storage.local.set({installationId:id});return id;
+  });return identityPromise;
+}
 async function api(path,body){
+  const instance=await identity();
   const response=await fetch(LOFI_CONFIG.url+'/bridge/'+path,{method:body===undefined?'GET':'POST',
-    headers:{'Authorization':'Bearer '+LOFI_CONFIG.token,'Content-Type':'application/json'},
+    headers:{'Authorization':'Bearer '+LOFI_CONFIG.token,'X-LoFi-Instance':instance,'Content-Type':'application/json'},
     ...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(25000)});
   if(!response.ok)throw new Error(await response.text());return response.json();
 }
@@ -76,6 +84,9 @@ async function poll(){
 }
 chrome.runtime.onMessage.addListener((m,sender,reply)=>{
   const handle=async()=>{
+    if(m.type==='profile-info')return api('profile');
+    if(m.type==='activate-profile'){const result=await api('activate',{});void poll();return result;}
+    if(m.type==='rename-profile')return api('rename',{label:m.label});
     if(m.type==='ready'){
       if(!sender.tab)return {ok:false};const list=frames.get(sender.tab.id)||[];
       frames.set(sender.tab.id,[...list.filter(f=>f.id!==sender.frameId),{id:sender.frameId,kinds:m.kinds}]);

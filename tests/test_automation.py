@@ -130,7 +130,7 @@ def test_profile_isolation_and_no_tick_without_saved_render(tmp_path):
         assert client.get('/api/state',headers={'Origin':'https://evil.example'}).status_code==403
         e=app.state.engine;e.state['status']='running';e.enqueue('image_pair',{'url':'https://chatgpt.com/'})
         key=app.state.keys
-        main={'Authorization':'Bearer '+key['main']};gpt={'Authorization':'Bearer '+key['gpt']}
+        main={'Authorization':'Bearer '+key['main'],'X-LoFi-Instance':'a'*32};gpt={'Authorization':'Bearer '+key['gpt'],'X-LoFi-Instance':'b'*32}
         assert client.get('/bridge/next',headers=main).json()['task'] is None
         task=client.get('/bridge/next',headers=gpt).json()['task']
         assert client.post('/bridge/claim',headers=main,json={'id':task['id']}).status_code==400
@@ -146,3 +146,48 @@ def test_telegram_transport_redacts_token(monkeypatch):
     monkeypatch.setattr(requests,'post',failure)
     with pytest.raises(RuntimeError) as error:Telegram('TOPSECRET','123').call('sendMessage')
     assert 'TOPSECRET' not in str(error.value)
+
+
+def test_replacement_profile_never_steals_tasks_or_reactivates_old_account(tmp_path):
+    app=create_app(tmp_path/'bridge',start_loop=False)
+    with TestClient(app,base_url='http://127.0.0.1:7861') as client:
+        e=app.state.engine
+        old={'Authorization':'Bearer '+app.state.keys['main'],'X-LoFi-Instance':'1'*32}
+        new={'Authorization':'Bearer '+app.state.keys['main'],'X-LoFi-Instance':'2'*32}
+        ui={'X-LoFi-Token':app.state.keys['ui']}
+        assert client.get('/bridge/profile',headers=old).json()['active']
+        assert not client.get('/bridge/profile',headers=new).json()['active']
+        first=e.enqueue('flow_music',{'url':'https://www.flowmusic.app/session?t=true'})
+        assert client.get('/bridge/next',headers=new).json()['task'] is None
+        assert client.post('/bridge/activate',headers=new,json={}).status_code==400
+        assert client.post('/bridge/claim',headers=old,json={'id':first['id']}).status_code==200
+        e.pause()
+        assert client.post('/api/settings',headers=ui,json={'main_profile':'Profile 90'}).status_code==200
+        assert not client.get('/bridge/next',headers=old).json()['active']
+        assert client.post('/bridge/activate',headers=new,json={}).status_code==200
+        second=e.enqueue('flow_music',{'url':'https://www.flowmusic.app/session?t=true'})
+        assert client.get('/bridge/next',headers=old).json()['task'] is None
+        assert client.post('/bridge/claim',headers=old,json={'id':second['id']}).status_code==403
+        assert client.get('/bridge/next',headers=new).json()['task']['id']==second['id']
+        assert client.post('/bridge/claim',headers=new,json={'id':second['id']}).status_code==200
+    restored=create_app(tmp_path/'bridge',start_loop=False)
+    assert restored.state.bindings.data['active']['main']=='2'*32
+
+
+def test_switching_an_idle_profile_preserves_pending_telegram_approval(tmp_path):
+    app=create_app(tmp_path/'bridge',start_loop=False)
+    with TestClient(app,base_url='http://127.0.0.1:7861') as client:
+        e=app.state.engine
+        for identifier in ('3'*32,'4'*32):
+            headers={'Authorization':'Bearer '+app.state.keys['gpt'],'X-LoFi-Instance':identifier}
+            assert client.get('/bridge/profile',headers=headers).status_code==200
+        e.state.update(status='awaiting_approval',approval_nonce='keep-this-nonce',telegram_message_id=77)
+        new={'Authorization':'Bearer '+app.state.keys['gpt'],'X-LoFi-Instance':'4'*32}
+        assert client.post('/bridge/activate',headers=new,json={}).status_code==200
+        assert e.state['status']=='awaiting_approval'
+        assert e.state['approval_nonce']=='keep-this-nonce'
+        assert e.state['telegram_message_id']==77
+        ui={'X-LoFi-Token':app.state.keys['ui']}
+        assert client.post('/api/settings',headers=ui,json={'gpt_profile':'Profile 88'}).status_code==200
+        assert app.state.bindings.data['active']['gpt'] is None
+        assert client.post('/api/settings',headers=ui,json={'telegram_chat_id':'999'}).status_code==400

@@ -86,13 +86,24 @@ class Engine:
 
     def configure(self, data):
         with self.lock:
-            if self.state['status'] not in ('idle','complete','paused','failed','interrupted'):
-                raise ValueError('Dừng quy trình trước khi đổi cấu hình')
             current = self.settings.model_dump()
             # A blank password field preserves the saved bot token.
             if not data.get('telegram_token'): data = {k:v for k,v in data.items() if k != 'telegram_token'}
-            self.settings = Settings(**{**current, **data})
+            proposed=Settings(**{**current, **data})
+            changed={key for key,value in proposed.model_dump().items() if current.get(key)!=value}
+            if self.state['status'] not in ('idle','complete','paused','failed','interrupted'):
+                if not changed.issubset({'main_profile','gpt_profile','gpt_project_url','flow_url'}):
+                    raise ValueError('Dừng quy trình trước khi đổi cấu hình xử lý/Telegram')
+                if changed & {'main_profile','flow_url'}:self.assert_profile_idle('main')
+                if changed & {'gpt_profile','gpt_project_url'}:self.assert_profile_idle('gpt')
+            self.settings = proposed
             atomic(self.settings_path, self.settings.model_dump())
+
+    def assert_profile_idle(self,role):
+        if self.state.get('task_id') and self.state['status']=='running':
+            task=self.task(self.state['task_id'])
+            if task['role']==role and task['status'] in ('queued','running'):
+                raise ValueError(f'Profile {role} đang xử lý một bước. Chờ bước xong hoặc bấm Dừng trước khi chuyển.')
 
     def preflight(self):
         c = self.settings
@@ -304,7 +315,12 @@ class Engine:
             if task and task['status']!='done':
                 if task['kind'] in ('image_pair','flow_video','flow_music') and task['submitted'] and not allow_resubmit:
                     raise ValueError('Bước này đã gửi prompt. Kiểm tra phiên trên web; chỉ cho phép gửi lại khi bạn bật xác nhận riêng.')
-                self.enqueue(task['kind'],task['payload']); return
+                payload=dict(task['payload'])
+                if task['kind']=='image_pair':
+                    payload.update(url=self.settings.gpt_project_url or 'https://chatgpt.com/',
+                        assets=self.settings.references+([self.settings.style_path] if self.settings.style_path else []))
+                elif task['kind']=='flow_video':payload.update(url=self.settings.flow_url,model=self.settings.flow_model)
+                self.enqueue(task['kind'],payload); return
             if self.state.get('notification_started'):
                 self.state.update(status='notifying',notification_started=False); self.save(); return
             if self.state.get('artifacts',{}).get('music'):

@@ -62,6 +62,31 @@ upload/publish is performed; metadata is saved under each scenario's cache folde
 
 ## Working while it runs
 
+### Change accounts when a plan expires
+
+Chrome profiles are selectable by their display name/email in the automation UI;
+you do not need to edit code or remember the directory number. Each extension
+installation has a separate persistent identifier in that Chrome profile.
+
+1. Pause if the role is processing a browser task. At the Telegram review gate,
+   or while only the other role is busy, an idle role can be switched without
+   cancelling the completed output or invalidating its Telegram approval.
+2. Select the new Chrome profile by name. Save settings or click its Open Chrome
+   button, which saves the selected profile before opening its extensions page.
+3. Load the same `extensions/main` or `extensions/gpt` folder in the new profile.
+   Open the extension popup, give it a recognizable name and click **Dùng profile này**.
+   Alternatively choose its installation in Studio and activate it there.
+4. Sign in to the needed services in the new profile. Make sure it can access
+   the configured ChatGPT/Flow projects and Excel link; update project URLs if needed.
+   Continue the paused step, or approve the pending result on Telegram as normal.
+
+Only the selected installation for each role receives/claims tasks. An old profile
+may remain open with the extension installed; its heartbeats cannot reactivate it.
+New installations do not take over automatically after the first pairing. Token,
+metadata, prompts, approval state and completed assets are preserved across switches.
+
+### Background browser operation
+
 All browser tasks use newly created, inactive tabs. DOM actions and trusted CDP
 keystrokes target only those tabs through the extension's Debugger permission.
 They do not use OS mouse/keyboard input, global shortcuts or the clipboard. You

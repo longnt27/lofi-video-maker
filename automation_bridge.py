@@ -19,10 +19,12 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from automation_engine import Engine, ROOT
 from automation_workbook import queue_records
+from automation_profiles import ProfileBindings
 
 
 def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
     engine=Engine(Path(home))
+    bindings=ProfileBindings(engine)
     credentials=engine.home/'bridge-keys.json'
     if not credentials.exists(): credentials.write_text(json.dumps({r:secrets.token_urlsafe(32) for r in ('ui','main','gpt')}),encoding='utf-8')
     keys=json.loads(credentials.read_text(encoding='utf-8'))
@@ -49,7 +51,7 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
         yield
         engine.stop_event.set()
     app=FastAPI(title='LoFi Studio Automation',lifespan=lifespan,docs_url=None,redoc_url=None)
-    app.state.engine,app.state.keys=engine,keys
+    app.state.engine,app.state.keys,app.state.bindings=engine,keys,bindings
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=['localhost','127.0.0.1'])
 
     @app.middleware('http')
@@ -61,6 +63,12 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
         request.state.role=next((r for r in ('main','gpt') if secrets.compare_digest(supplied,keys[r])),None)
         if request.url.path.startswith('/bridge/') and not request.state.role:
             return JSONResponse({'detail':'Bridge authentication required'},status_code=403)
+        if request.url.path.startswith('/bridge/'):
+            try:request.state.instance=bindings.register(request.state.role,request.headers.get('x-lofi-instance',''))
+            except ValueError as exc:return JSONResponse({'detail':str(exc)},status_code=403)
+            if bindings.selected(request.state.role,request.state.instance):engine.connected[request.state.role]=time.time()
+            if request.url.path not in ('/bridge/next','/bridge/profile','/bridge/activate','/bridge/rename') and not bindings.selected(request.state.role,request.state.instance):
+                return JSONResponse({'detail':'Profile này không được chọn; không giao tác vụ cho tài khoản cũ'},status_code=403)
         if request.url.path.startswith('/api/') and request.method!='GET' and not secrets.compare_digest(request.headers.get('x-lofi-token',''),keys['ui']):
             return JSONResponse({'detail':'UI authentication required'},status_code=403)
         response=await call_next(request)
@@ -76,10 +84,29 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
             json.dumps({'token':keys['ui'],'home':str(engine.home)},ensure_ascii=True))
 
     @app.get('/api/state')
-    def state(): return engine.public()
+    def state():
+        result=engine.public();result['browser_profiles']=bindings.public();return result
+
+    @app.get('/api/profiles')
+    def profiles():
+        from flow_music_browser import chrome_profiles
+        return {'profiles':chrome_profiles()}
 
     @app.post('/api/settings')
-    async def settings(request: Request): engine.configure(await request.json()); return {'ok':True}
+    async def settings(request: Request):
+        data=await request.json()
+        with engine.lock:
+            changed=[role for role in ('main','gpt') if data.get(role+'_profile',getattr(engine.settings,role+'_profile'))!=getattr(engine.settings,role+'_profile')]
+            for role in changed:bindings.mutable(role)
+            engine.configure(data)
+            for role in changed:bindings.clear(role)
+        return {'ok':True}
+
+    @app.post('/api/profiles/activate')
+    async def select_instance(request: Request):
+        data=await request.json()
+        if data.get('role') not in ('main','gpt'):raise ValueError('Unknown role')
+        bindings.activate(data['role'],data['instance']);return {'ok':True}
 
     @app.post('/api/start')
     def start(): engine.start(); return {'ok':True}
@@ -91,9 +118,14 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
     async def resume(request: Request): engine.resume(bool((await request.json()).get('allow_resubmit'))); return {'ok':True}
 
     @app.post('/api/open/{role}')
-    def open_profile(role: str):
+    async def open_profile(role: str,request: Request):
         if role not in ('main','gpt'): raise ValueError('Unknown profile role')
         from flow_music_browser import chrome_executable
+        body=await request.json()
+        chosen=body.get('profile')
+        if chosen and chosen!=getattr(engine.settings,role+'_profile'):
+            with engine.lock:
+                bindings.mutable(role);engine.configure({role+'_profile':chosen});bindings.clear(role)
         profile=engine.settings.main_profile if role=='main' else engine.settings.gpt_profile
         subprocess.Popen([chrome_executable(),'--profile-directory='+profile,'--new-window','chrome://extensions/'],
             stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -107,7 +139,23 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
         return FileResponse(path,media_type='video/mp4')
 
     @app.get('/bridge/next')
-    def next_task(request: Request): return {'ok':True,'task':engine.next_task(request.state.role)}
+    def next_task(request: Request):
+        selected=bindings.selected(request.state.role,request.state.instance)
+        return {'ok':True,'active':selected,'task':engine.next_task(request.state.role) if selected else None}
+
+    @app.get('/bridge/profile')
+    def own_profile(request: Request):
+        role=request.state.role;instance=request.state.instance
+        return {'ok':True,'role':role,'active':bindings.selected(role,instance),
+                'instance':bindings.data['instances'][role][instance]}
+
+    @app.post('/bridge/activate')
+    def activate_profile(request: Request):
+        bindings.activate(request.state.role,request.state.instance);return {'ok':True}
+
+    @app.post('/bridge/rename')
+    async def rename_profile(request: Request):
+        body=await request.json();bindings.rename(request.state.role,request.state.instance,str(body.get('label','')));return {'ok':True}
 
     @app.post('/bridge/claim')
     async def claim(request: Request):

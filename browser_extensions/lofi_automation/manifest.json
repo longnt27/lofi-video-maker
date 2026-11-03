@@ -1,5 +1,5 @@
 {
-  "manifest_version":3,"version":"0.2.0","name":"LoFi Studio Automation",
+  "manifest_version":3,"version":"0.3.0","name":"LoFi Studio Automation",
   "description":"Dedicated background tabs for the local LoFi pipeline. Each profile has its own role and key.",
   "permissions":["alarms","downloads","storage","debugger"],"host_permissions":[],
   "background":{"service_worker":"background.js"},
