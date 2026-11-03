@@ -233,7 +233,7 @@ def build_app(home: Path, device: str = "auto"):
                     scan_btn = gr.Button("Đọc lại danh sách")
                     playlist_table = gr.Dataframe(headers=["STT", "Bài nhạc", "Thời lượng"], datatype=["number", "str", "str"], interactive=False)
                 playlist_summary = gr.Textbox(label="Playlist", interactive=False)
-                keep_source_audio = gr.Checkbox(value=True, label="Giữ tiếng môi trường từ video gốc")
+                keep_source_audio = gr.Checkbox(value=False, label="Giữ tiếng môi trường từ video gốc")
                 source_audio_volume = gr.Slider(0, 100, value=10, step=1, label="Âm lượng tiếng gốc (%)")
                 gr.Markdown("Tiếng gốc được hòa nhẹ khi lặp và trộn dưới nhạc. Nếu có lời nói hoặc nhạc trong video gốc, chúng cũng được giữ. Video không có tiếng sẽ chỉ dùng playlist.")
                 gr.Markdown("### 3. Lưu bản mix")
