@@ -97,6 +97,7 @@ class FrameProcessor:
         self.model_dir, self.variant, self.tile = Path(model_dir), variant, tile
         self.lama_path = Path(lama_path) if lama_path else None
         self.sessions = {}
+        self.requested_device = device
         self.preload_error = None
         self._dll_handles = []
         if hasattr(ort, "preload_dlls") and device != "cpu":
@@ -151,24 +152,51 @@ class FrameProcessor:
             partial.unlink(missing_ok=True)
         return dest
 
+    def _fallback_to_cpu(self, error: Exception, stage: str) -> bool:
+        """Auto mode retries CPU/FP32 when CUDA session setup or inference fails.
+
+        InferenceSession may advertise CUDA but fail only after its first run;
+        checking get_available_providers() alone is not sufficient.
+        Explicit --fallin-device cuda remains strict and never silently falls
+        back, so a requested GPU run cannot masquerade as successful CUDA.
+        """
+        if self.requested_device != "auto" or self.device != "cuda":
+            return False
+        status.action(
+            f"CUDA {stage} failed ({str(error)[:160]}); retrying CPU with FP32 weights"
+        )
+        self.sessions.clear()
+        self.device = "cpu"
+        return True
+
     def session(self, kind: str):
-        if kind not in self.sessions:
+        if kind in self.sessions:
+            return self.sessions[kind]
+        while True:
             providers = (["CUDAExecutionProvider", "CPUExecutionProvider"]
                          if self.device == "cuda" else ["CPUExecutionProvider"])
             options = self.ort.SessionOptions()
             options.intra_op_num_threads = 2
-            sess = self.ort.InferenceSession(str(self.weight(kind)), sess_options=options, providers=providers)
-            sess.disable_fallback()
-            if self.device == "cuda" and "CUDAExecutionProvider" not in sess.get_providers():
-                extra = f" Preload error: {self.preload_error}" if self.preload_error else ""
-                raise RuntimeError(
-                    f"ONNX Runtime {self.ort.__version__} could not initialize CUDA. "
-                    f"Python: {sys.executable}. Install the pinned CUDA/cuDNN runtime with "
-                    f'"{sys.executable}" -m pip install -r requirements.txt, '
-                    "then restart LoFi Studio. Select --device cpu for a CPU-only run."
-                    + extra)
-            self.sessions[kind] = sess
-        return self.sessions[kind]
+            try:
+                sess = self.ort.InferenceSession(
+                    str(self.weight(kind)), sess_options=options, providers=providers
+                )
+                sess.disable_fallback()
+                if self.device == "cuda" and "CUDAExecutionProvider" not in sess.get_providers():
+                    extra = f" Preload error: {self.preload_error}" if self.preload_error else ""
+                    raise RuntimeError(
+                        f"ONNX Runtime {self.ort.__version__} could not initialize CUDA. "
+                        f"Python: {sys.executable}. Install the pinned CUDA/cuDNN runtime with "
+                        f'"{sys.executable}" -m pip install -r requirements.txt, '
+                        "then restart LoFi Studio. Select --device cpu for a CPU-only run."
+                        + extra
+                    )
+                self.sessions[kind] = sess
+                return sess
+            except Exception as exc:
+                if self._fallback_to_cpu(exc, f"{kind} session initialization"):
+                    continue
+                raise
 
     def crop_settings(self, box, width: int, height: int):
         cv2, np = self.cv2, self.np
@@ -197,7 +225,12 @@ class FrameProcessor:
         resized_mask = cv2.resize(mask, (512, 512), interpolation=cv2.INTER_NEAREST)
         inputs = {"image": np.ascontiguousarray(image.transpose(2, 0, 1)[None], dtype=np.float32)/255,
                   "mask": (resized_mask > 127).astype(np.float32)[None, None]}
-        out = self.session("lama").run(None, inputs)[0]
+        try:
+            out = self.session("lama").run(None, inputs)[0]
+        except Exception as exc:
+            if not self._fallback_to_cpu(exc, "LaMa inference"):
+                raise
+            out = self.session("lama").run(None, inputs)[0]
         if out.shape != (1, 3, 512, 512) or not np.isfinite(out).all():
             raise RuntimeError("Invalid LaMa output")
         recovered = np.clip(out[0].transpose(1, 2, 0), 0, 255).astype(np.uint8)
@@ -220,7 +253,14 @@ class FrameProcessor:
         dtype = np.float16 if inputs[0].type == "tensor(float16)" else np.float32
         rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
         tensor = np.ascontiguousarray(rgb.transpose(2, 0, 1)[None], dtype=dtype)/np.array(255, dtype=dtype)
-        out = session.run(None, {inputs[0].name: tensor})[0]
+        try:
+            out = session.run(None, {inputs[0].name: tensor})[0]
+        except Exception as exc:
+            if not self._fallback_to_cpu(exc, "Fallin inference"):
+                raise
+            # A CPU model may require float32, whereas CUDA had an FP16 model.
+            # Rebuild the tensor through infer() after switching providers.
+            return self.infer(frame)
         expected = (1, 3, padded.shape[0]*2, padded.shape[1]*2)
         if out.shape != expected or not np.isfinite(out).all():
             raise RuntimeError(f"Invalid Fallin output: {out.shape}, expected {expected}")
