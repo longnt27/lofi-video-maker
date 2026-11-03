@@ -140,7 +140,7 @@ class StreamingTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError) as error:
                     processor.session("fallin")
         self.assertIn(sys.executable, str(error.exception))
-        self.assertIn("requirements.txt", str(error.exception))
+        self.assertIn("requirements-cuda.txt", str(error.exception))
         self.assertIn("restart LoFi Studio", str(error.exception))
         self.assertNotIn("fallin", processor.sessions)
 
