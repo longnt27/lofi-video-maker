@@ -74,9 +74,15 @@ class StudioStorageTests(unittest.TestCase):
             capture_output=True, text=True, timeout=90)
         self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
         data = json.loads(result.stdout.strip().splitlines()[-1])
-        self.assertEqual(Path(data["upload"]), home/"uploads")
-        self.assertEqual(Path(data["temp"]), home/"tmp")
-        self.assertEqual(Path(data["child_temp"]), home/"tmp")
+        # Compare filesystem identity, not textual spelling: macOS uses
+        # /var -> /private/var symlinks; Windows may expand 8.3 short names
+        # (RUNNER~1) into the equivalent long user profile path.
+        self.assertTrue(Path(data["upload"]).samefile(home/"uploads"),
+                        f"Gradio upload storage escaped chosen folder: {data['upload']}")
+        self.assertTrue(Path(data["temp"]).samefile(home/"tmp"),
+                        f"Process temp storage escaped chosen folder: {data['temp']}")
+        self.assertTrue(Path(data["child_temp"]).samefile(home/"tmp"),
+                        f"Worker temp storage escaped chosen folder: {data['child_temp']}")
 
 
 if __name__ == "__main__":
