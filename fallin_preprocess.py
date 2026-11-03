@@ -187,7 +187,7 @@ class FrameProcessor:
                     raise RuntimeError(
                         f"ONNX Runtime {self.ort.__version__} could not initialize CUDA. "
                         f"Python: {sys.executable}. Install the pinned CUDA/cuDNN runtime with "
-                        f'"{sys.executable}" -m pip install -r requirements.txt, '
+                        f'"{sys.executable}" -m pip install -r requirements-cuda.txt ' 
                         "then restart LoFi Studio. Select --device cpu for a CPU-only run."
                         + extra
                     )
