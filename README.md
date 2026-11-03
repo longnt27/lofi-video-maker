@@ -240,7 +240,9 @@ does not depend on another application's DLLs. Restart Studio after installing
 or changing native libraries. A compatible NVIDIA graphics driver is still required.
 See the [ONNX Runtime CUDA compatibility table](https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html).
 `--fallin-device cuda` fails clearly if a CUDA session cannot initialize;
-`auto` selects CUDA when advertised by ONNX Runtime, otherwise CPU. CPU uses
+`auto` tries CUDA when advertised by ONNX Runtime and retries CPU if CUDA
+initialization or frame inference fails. Explicit `cuda` mode fails rather than
+silently falling back. CPU uses
 the FP32 Fallin export; CUDA uses FP16. Models download on first use.
 
 ### Prepare a short clip or build the full mix
@@ -297,9 +299,9 @@ Both use the selected first N seconds of the uploaded clip (default 10, at most
 60) and share a cache keyed by source, models, watermark and output settings.
 Exporting the short clip first lets you inspect it before a long render without
 repeating AI inference. Changing only music or loop/fade settings reuses the
-prepared clip. Studio exports one final music-video mix. Original video audio
-is kept quietly beneath the playlist by default (10% linear gain). Under the
-music section, turn off **Giữ tiếng môi trường từ video gốc** for music only, or
+prepared clip. Studio exports one final music-video mix. Original video audio is **muted by default**, preserving the original
+music-only pipeline. Under the music section, enable
+**Giữ tiếng môi trường từ video gốc** to blend it into the soundtrack, or
 adjust **Âm lượng tiếng gốc (%)** from 0 to 100. A source with no audio falls back
 to music only.
 
@@ -314,8 +316,8 @@ Full export length follows the playlist after crossfades. The selector defaults
 to **Toàn bộ playlist**; choose 30 seconds for a quick test or 125 seconds to inspect
 dust before a full export.
 
-The CLI uses the same 10% default: --source-audio-volume 15 changes the gain,
-and --mute-source-audio or --source-audio-volume 0 produces music only. These
+The CLI defaults to music only: --source-audio-volume 15 opts in to a 15%
+source-audio blend; --mute-source-audio or --source-audio-volume 0 produces music only. These
 settings affect the final mix, not the short preprocessing output.
 
 Select seamless looping and opening/closing fades in the music section. Dust is
