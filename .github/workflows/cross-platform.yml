@@ -6,6 +6,9 @@ on:
     branches: [main, fix/pr3-compatibility-review]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
