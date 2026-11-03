@@ -117,7 +117,8 @@ class AmbientAudioTests(unittest.TestCase):
         tracks.mkdir()
         shutil.copy2(self.music, tracks/"track.wav")
         for label, flags, expected in [
-                ("default", [], 0.1),
+                ("default", [], 0),
+                ("enabled", ["--source-audio-volume", "10"], 0.1),
                 ("muted", ["--mute-source-audio"], 0),
                 ("custom-full", ["--source-audio-volume", "25", "--mode", "full"], 0.25)]:
             with self.subTest(label=label):
