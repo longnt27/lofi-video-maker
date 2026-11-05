@@ -38,11 +38,12 @@ class Settings(BaseModel):
     gpt_profile: str = 'Profile 52'
     gpt_project_url: str = ''
     flow_url: str = 'https://flow.google.com/project/5d272dab-59e3-4a29-9297-b139770754b8'
-    flow_model: str = 'Omni Flash'
+    flow_model: str = 'Omni 1.1 Flash'
     references: list[str] = Field(default_factory=list)
     style_path: str = ''
     output_dir: str = str(ROOT / 'data/outputs')
-    music_count: int = Field(default=1, ge=1, le=30)
+    music_session_url: str = 'https://www.flowmusic.app/session/410a8eab-47fa-4891-bdd7-d3dde6fea56b'
+    music_count: int = Field(default=3, ge=1, le=30)
     remove_watermark: bool = True
     watermark_box: list[float] | None = None  # Normalized x,y,width,height, explicitly calibrated.
     variant: str = 'soft'
@@ -105,7 +106,7 @@ class Engine:
             if task['role']==role and task['status'] in ('queued','running'):
                 raise ValueError(f'Profile {role} đang xử lý một bước. Chờ bước xong hoặc bấm Dừng trước khi chuyển.')
 
-    def preflight(self):
+    def preflight(self, local_review=False):
         c = self.settings
         if urlparse(c.excel_url).hostname != 'cmcuni-my.sharepoint.com': raise ValueError('Cần link Excel thuộc cmcuni-my.sharepoint.com')
         if not re.fullmatch(r'https://flow\.google\.com/project/[0-9a-fA-F-]{36}/?', c.flow_url): raise ValueError('Cần URL project Google Flow')
@@ -116,12 +117,14 @@ class Engine:
             b = c.watermark_box
             if not b or len(b) != 4 or not all(math.isfinite(n) for n in b) or min(b[:2]) < 0 or min(b[2:]) <= 0 or b[0]+b[2] > 1 or b[1]+b[3] > 1 or b[2]*b[3] > .25:
                 raise ValueError('Cần khoanh watermark một lần và lưu tọa độ chuẩn hóa x,y,w,h; không tự đoán vùng xóa')
+        if not re.fullmatch(r'https://www[.]flowmusic[.]app/session/[0-9a-fA-F-]{36}/?',c.music_session_url):
+            raise ValueError('Cần link session Flow Music hợp lệ.')
         if c.variant not in ('soft','strong') or c.device not in ('auto','cpu','cuda'): raise ValueError('Sai cấu hình upscale')
         if c.preview_seconds is not None and c.preview_seconds < 1: raise ValueError('Thời lượng xem thử phải dương')
-        bot=Telegram(c.telegram_token, c.telegram_chat_id, c.telegram_reviewer_id or None)
         for role in ('main','gpt'):
             if time.time()-self.connected.get(role, 0) > 75: raise ValueError(f'Extension profile {role} chưa kết nối')
-        bot.check()
+        if not local_review:
+            Telegram(c.telegram_token, c.telegram_chat_id, c.telegram_reviewer_id or None).check()
         Path(c.output_dir).mkdir(parents=True, exist_ok=True)
 
     def public(self):
@@ -142,7 +145,19 @@ class Engine:
     def put_task(self, task): atomic(self.tasks_dir/(task['id']+'.json'), task)
 
     def enqueue(self, kind, payload):
-        role = 'gpt' if kind == 'image_pair' else 'main'
+        if kind == 'image_pair':
+            kind = 'generate_image'
+        elif kind == 'image_edit':
+            kind = 'collect_image'
+        if kind == 'collect_image':
+            # The project link and /c/<id> open the same chat. Pass the latter
+            # so the extension's exact URL check survives the project redirect.
+            parts = urlparse(payload['url'])
+            match = re.search(r'/c/([0-9a-fA-F-]{36})/?$', parts.path)
+            if parts.scheme != 'https' or parts.netloc != 'chatgpt.com' or not match:
+                raise ValueError('Link hội thoại ChatGPT không hợp lệ.')
+            payload = {**payload, 'url': 'https://chatgpt.com/c/' + match[1]}
+        role = 'gpt' if kind in ('generate_image','collect_image') else 'main'
         task = {'id': uuid.uuid4().hex, 'kind': kind, 'role': role, 'status': 'queued',
                 'payload': payload, 'created_at': now(), 'submitted': False, 'session_url': ''}
         self.put_task(task)
@@ -166,22 +181,35 @@ class Engine:
             self.put_task(task)
             return task
 
-    def progress(self, task_id, role, message, submitted=False, session_url=''):
+    @staticmethod
+    def song_link(value):
+        url = urlparse(value)
+        if (url.scheme != 'https' or url.netloc not in ('www.flowmusic.app', 'flowmusic.app')
+                or not re.fullmatch(r'/(?:song|track)/[a-zA-Z0-9_-]+/?', url.path)):
+            raise ValueError('Cần link bài nhạc Flow Music (/song/… hoặc /track/…).')
+        return 'https://' + url.netloc + url.path.rstrip('/')
+
+    def progress(self, task_id, role, message, submitted=False, session_url='', song_url=''):
         with self.lock:
             task = self.task(task_id)
             if task['role'] != role or task['status'] != 'running' or self.state.get('task_id') != task_id: raise ValueError('Task is not running')
             if session_url and urlparse(session_url).hostname not in ('chatgpt.com','www.flowmusic.app','flowmusic.app','flow.google.com','cmcuni-my.sharepoint.com'):
                 raise ValueError('Unexpected provider URL')
+            if song_url and task['kind'] in ('flow_music','collect_music'):
+                task['song_url'] = self.song_link(song_url)
             task.update(submitted=task['submitted'] or submitted, session_url=session_url or task['session_url'])
             self.put_task(task)
             self.state['message'] = message
             self.save()
 
-    def start(self):
+    def start(self, local_review=False, restart_failed=False):
         with self.lock:
-            if self.state['status'] not in ('idle','complete'): raise ValueError('Quy trình đang chạy hoặc đang chờ duyệt; không tạo phiên mới')
-            self.preflight()
-            self.state = {'run_id': uuid.uuid4().hex[:12], 'status':'running', 'completed':[], 'telegram_offset':self.state.get('telegram_offset',0)}
+            restart=restart_failed and self.state['status'] in ('failed','interrupted','paused')
+            if not restart and self.state['status'] not in ('idle','complete'): raise ValueError('Quy trình đang chạy hoặc đang chờ duyệt; không tạo phiên mới')
+            self.preflight(local_review)
+            if self.state.get('run_id'):
+                atomic(self.home/'runs'/self.state['run_id']/'state.json', self.state)
+            self.state = {'run_id': uuid.uuid4().hex[:12], 'status':'running', 'completed':[], 'telegram_offset':self.state.get('telegram_offset',0), 'local_review':local_review}
             self.enqueue('excel_snapshot', {'url':self.settings.excel_url})
 
     def complete_task(self, task_id, role, result):
@@ -203,30 +231,32 @@ class Engine:
                 self.state.update(record=record, artifacts={}, music_index=0)
                 self.scenario_dir().mkdir(parents=True, exist_ok=True)
                 atomic(self.scenario_dir()/'youtube.json', record['youtube'])
-                self.enqueue('image_pair', {'url':self.settings.gpt_project_url or 'https://chatgpt.com/', 'prompt1':record['image_prompt_1'],
-                    'prompt2':record['image_prompt_2'], 'project':bool(self.settings.gpt_project_url),
+                self.enqueue('generate_image', {'url':self.settings.gpt_project_url or 'https://chatgpt.com/', 'prompt1':record['image_prompt_1'],
+                    'project':bool(self.settings.gpt_project_url),
                     'assets':self.settings.references+([self.settings.style_path] if self.settings.style_path else []), 'timeout':900})
-            elif kind == 'image_pair':
+            elif kind in ('generate_image','collect_image'):
                 self.state['artifacts']['image'] = result['path']
                 self.enqueue('flow_video', {'url':self.settings.flow_url, 'model':self.settings.flow_model,
                     'duration':10, 'count':1, 'image':result['path'], 'prompt':self.state['record']['animation_prompt'], 'timeout':1200})
-            elif kind == 'flow_video':
+            elif kind in ('flow_video','collect_video'):
                 self.state['artifacts']['video'] = result['path']
                 self.enqueue_music()
-            elif kind == 'flow_music':
+            elif kind in ('flow_music','collect_music'):
                 self.state['artifacts'].setdefault('music',[]).append(result['path'])
                 self.state['music_index'] += 1
                 if self.state['music_index'] < self.settings.music_count: self.enqueue_music()
                 else: self.start_render()
             elif kind == 'excel_tick':
                 if result.get('checked') is not True: raise ValueError('Excel checkbox change was not verified')
-                self.state.update(status='notifying', message='Đã tick Excel. Đang chuẩn bị gửi Telegram.', notification_started=False)
+                if self.state.get('record'):
+                    self.state.setdefault('completed', []).append(self.state['record']['id'])
+                self.state.update(status='complete', stage='complete', message='Đã tick Excel và hoàn tất kịch bản.')
                 self.save()
 
     def enqueue_music(self):
         r = self.state['record']
-        self.enqueue('flow_music', {'url':'https://www.flowmusic.app/session?t=true',
-            'prompt':r['music_prompt']+f'\nVariation {self.state["music_index"]+1}.',
+        self.enqueue('flow_music', {'url':self.settings.music_session_url,
+            'prompt':r['music_prompt'],
             'instrumental':True, 'format':'mp3', 'timeout':900})
 
     def scenario_dir(self): return self.home/'runs'/self.state['run_id']/self.state['record']['id']
@@ -235,7 +265,14 @@ class Engine:
         from fallin_preprocess import media_info
         c, a = self.settings, self.state['artifacts']
         scene = self.scenario_dir()
-        music = scene/'music'; music.mkdir(exist_ok=True)
+        export=Path(c.output_dir)/f'{self.state["record"]["id"]}_{self.state["run_id"]}'
+        export.mkdir(parents=True,exist_ok=True)
+        for key in ('image','video'):
+            if a.get(key):
+                source=Path(a[key]); target=export/(key+source.suffix)
+                if not target.exists(): shutil.copy2(source,target)
+        if (scene/'youtube.json').exists(): shutil.copy2(scene/'youtube.json',export/'youtube.json')
+        music = export/'music'; music.mkdir(exist_ok=True)
         for index,path in enumerate(a['music']):
             dest = music/f'{index+1:02d}{Path(path).suffix}'
             if not dest.exists(): shutil.copy2(path,dest)
@@ -245,7 +282,7 @@ class Engine:
             x,y,w,h = c.watermark_box
             box = [round(x*info['width']), round(y*info['height']), round(w*info['width']), round(h*info['height'])]
             box[2] = min(box[2], info['width']-box[0]); box[3] = min(box[3], info['height']-box[1])
-        output = Path(c.output_dir)/f'{self.state["record"]["id"]}_{self.state["run_id"]}.mp4'
+        output = export/'mix.mp4'
         if output.exists():
             if media_info(output)['duration']<=0: raise ValueError('Existing output is invalid; refusing overwrite')
             self.state['output']=str(output)
@@ -279,6 +316,25 @@ class Engine:
             if task['role']!=role or task['status']!='running' or self.state.get('task_id')!=task_id: raise ValueError('Task is not active')
             task.update(status='failed', error=message); self.put_task(task)
             self.fail(message)
+            if task['kind'] in ('generate_image','image_pair') and task['submitted']:
+                self.recover_image(task)
+
+    def recover_image(self, task):
+        """Collect an already submitted image only from its own project chat."""
+        project=self.settings.gpt_project_url.rstrip('/').removesuffix('/project')
+        if not project:
+            return False
+        url=task.get('session_url','')
+        diagnostic=self.tasks_dir/(task['id']+'.txt')
+        if diagnostic.is_file():
+            # The diagnostic can be clipped after its first field.
+            match=re.match(r'\s*\{\s*"path"\s*:\s*"(/g/[^"]+/c/[\da-fA-F-]{36})"',diagnostic.read_text(encoding='utf-8'))
+            if match:
+                url='https://chatgpt.com'+match[1]
+        if not re.fullmatch(re.escape(project)+r'/c/[0-9a-fA-F-]{36}',url):
+            return False
+        self.continue_image(url)
+        return True
 
     def pause(self):
         with self.lock:
@@ -301,10 +357,10 @@ class Engine:
                 if task['status'] in ('running','queued'): task['status']='cancelled'; self.put_task(task)
             self.state.update(status='paused', message='Đã dừng. Yêu cầu đã gửi lên dịch vụ có thể vẫn hoàn thành.'); self.save()
 
-    def resume(self, allow_resubmit=False):
+    def resume(self, allow_resubmit=False, song_url=''):
         with self.lock:
             if self.state['status'] not in ('paused','failed','interrupted'): raise ValueError('Không có bước đang dừng để tiếp tục')
-            self.preflight()
+            self.preflight(self.state.get('local_review', False))
             task=self.task(self.state['task_id']) if self.state.get('task_id') else None
             if self.state.get('telegram_message_id') and self.state.get('output'):
                 # Resume still requires a fresh Telegram approval, never skips the gate.
@@ -313,10 +369,19 @@ class Engine:
                 task['status']='running'; self.put_task(task); self.state['status']='running'
                 self.complete_task(task['id'],task['role'],{'path':task['artifact']}); return
             if task and task['status']!='done':
-                if task['kind'] in ('image_pair','flow_video','flow_music') and task['submitted'] and not allow_resubmit:
+                if task['kind'] in ('generate_image','image_pair') and task['submitted'] and not allow_resubmit and self.recover_image(task):
+                    return
+                if task['kind'] in ('flow_music','collect_music') and (song_url or (task.get('song_url') and not allow_resubmit)):
+                    payload = {**task['payload'], 'song_url': self.song_link(song_url or task['song_url'])}
+                    self.enqueue('collect_music', payload)
+                    return
+                if task['kind']=='flow_video' and task['submitted'] and not allow_resubmit:
+                    self.collect_video()
+                    return
+                if task['kind'] in ('generate_image','image_pair','flow_video','flow_music') and task['submitted'] and not allow_resubmit:
                     raise ValueError('Bước này đã gửi prompt. Kiểm tra phiên trên web; chỉ cho phép gửi lại khi bạn bật xác nhận riêng.')
                 payload=dict(task['payload'])
-                if task['kind']=='image_pair':
+                if task['kind'] in ('image_pair','generate_image'):
                     payload.update(url=self.settings.gpt_project_url or 'https://chatgpt.com/',
                         assets=self.settings.references+([self.settings.style_path] if self.settings.style_path else []))
                 elif task['kind']=='flow_video':payload.update(url=self.settings.flow_url,model=self.settings.flow_model)
@@ -326,6 +391,26 @@ class Engine:
             if self.state.get('artifacts',{}).get('music'):
                 self.start_render(); return
             self.enqueue('excel_snapshot',{'url':self.settings.excel_url})
+
+    def collect_video(self):
+        with self.lock:
+            if self.state['status'] not in ('paused','failed','interrupted') or self.state.get('stage') not in ('flow_video','collect_video'):
+                raise ValueError('Dừng tại bước video trước khi lấy video đã tạo.')
+            self.enqueue('collect_video',{'url':self.settings.flow_url,
+                'prompt':self.state['record']['animation_prompt'],'timeout':1200})
+
+    def continue_image(self, conversation_url):
+        with self.lock:
+            stage=self.state.get('stage')
+            unsubmitted_video=stage=='flow_video' and not self.task(self.state['task_id'])['submitted']
+            if self.state['status'] not in ('paused','failed','interrupted') or (stage not in ('image_pair','image_edit','generate_image','collect_image') and not unsubmitted_video):
+                raise ValueError('Dừng tại bước tạo ảnh trước khi nối hội thoại.')
+            project=self.settings.gpt_project_url.rstrip('/').removesuffix('/project')
+            if not project or not re.fullmatch(re.escape(project)+r'/c/[0-9a-fA-F-]{36}',conversation_url):
+                raise ValueError('Cần link hội thoại thuộc đúng project ChatGPT đã cấu hình.')
+            record=self.state['record']
+            self.enqueue('collect_image',{'url':conversation_url,'prompt1':record['image_prompt_1'],
+                        'timeout':900})
 
     def tick_render(self):
         from studio_pipeline import read_state
@@ -352,6 +437,12 @@ class Engine:
             subprocess.run(['ffmpeg','-v','error','-y','-i',output,'-t','20','-vf','scale=640:-2',
                 '-c:v','libx264','-preset','veryfast','-crf','25','-c:a','aac','-b:a','96k','-movflags','+faststart',str(preview)],
                 check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=90)
+            if self.state.get('local_review'):
+                with self.lock:
+                    if self.state['status']=='notifying' and self.state['run_id']==run:
+                        self.state.update(status='complete', review_path=str(preview), message='Đã tick Excel và lưu bản xem trước trên máy.')
+                        self.save()
+                return
             bot=Telegram(self.settings.telegram_token,self.settings.telegram_chat_id,self.settings.telegram_reviewer_id or None)
             text=f'{record["id"]} · {record["title"]}\nĐã xuất bản mix và tick Excel.\n{output}\nApprove để chạy kịch bản tiếp theo; Dừng để giữ hàng đợi.'
             message=bot.notify(text,f'lf:{run}:{nonce}:approve',f'lf:{run}:{nonce}:stop',preview)
@@ -374,6 +465,8 @@ class Engine:
                 self.state.update(status='paused',message='Bạn đã chọn Dừng trên Telegram.'); self.save()
             else:
                 self.state['completed'].append(self.state['record']['id'])
+                for key in ('telegram_message_id','approval_nonce','notification_started','output','render_dir'):
+                    self.state.pop(key,None)
                 self.enqueue('excel_snapshot',{'url':self.settings.excel_url})
         try: bot.answer(callback['id'],'Đã duyệt. Đang lấy kịch bản tiếp theo.' if data.endswith(':approve') else 'Đã dừng.'); bot.remove_buttons(message_id)
         except RuntimeError: pass  # Approval was already persisted; never replay it.
@@ -387,7 +480,7 @@ class Engine:
             except Exception as exc:
                 with self.lock: self.fail(str(exc))
             try:
-                if self.settings.telegram_token and self.settings.telegram_chat_id:
+                if not self.state.get('local_review') and self.settings.telegram_token and self.settings.telegram_chat_id:
                     bot=Telegram(self.settings.telegram_token,self.settings.telegram_chat_id,self.settings.telegram_reviewer_id or None)
                     for update in bot.updates(self.state.get('telegram_offset',0)):
                         if 'callback_query' in update: self.handle_callback(update['callback_query'])

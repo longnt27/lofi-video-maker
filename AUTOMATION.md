@@ -21,7 +21,7 @@ the existing video-processing UI alone. No new Python dependencies are required.
   configuration and private role keys are generated locally and ignored by Git.
 - Keep both profiles open and signed in. Extension heartbeats show their connection.
 - Configure the Excel workbook and Google Flow project URLs. The ChatGPT project
-  URL creates each scenario's two-pass conversation inside that project. Its
+  URL creates each scenario's image conversation inside that project. Its
   instructions/style.md stay in project context; the approved local reference
   images are also attached to the first image request. A local style.md is optional
   when the project is configured.
@@ -39,22 +39,22 @@ the existing video-processing UI alone. No new Python dependencies are required.
 2. Read the existing `Kich_ban`, `Prompts` and `YouTube` sheets. Select the first
    unchecked, non-skipped `LOFI-*` ID. The XLSX reader never rewrites the workbook.
 3. Open a fresh conversation in the configured ChatGPT project. Attach the style
-   images and optional local style.md, run prompt 1, wait for its image, run prompt 2
-   in the same conversation, and download only the second result.
+   images and optional local style.md, send the first image prompt, and transfer the resulting image to Studio.
 4. Upload that image to the configured Google Flow project. Select the configured
-   Omni Flash model, Video/Frames, x1 and 10 seconds. If a required option is absent,
+   Omni 1.1 Flash model, Video/Ingredients, 16:9, 720p, x1 and 10 seconds. If a required option is absent,
    stop rather than silently substituting another model. Download Original size.
-5. Create the configured number of Flow Music tracks from the workbook prompt.
-   Each generation uses a fresh session and downloads its first completed track.
+5. Create the configured number of Flow Music tracks from the workbook prompt
+   in the configured session. The extension records the selected song link before
+   opening the download menu so a retry can download that same take.
 6. Run the existing `studio_pipeline.py`: LaMa → tiled Fallin → seamless loop →
    playlist mix, with source ambience at 10% by default. Only the final mix goes
    to the output folder; assets, logs and preview are under `cache/automation`.
 7. Reopen the cloud workbook, select the script sheet, verify the ID in column A,
    and check the corresponding column-I native checkbox only if currently FALSE.
    Verify TRUE and the saved state before reporting completion.
-8. Send a 20-second preview and the final local output path to Telegram with
-   **Approve → next script** and **Stop**. No next scenario is queued until the
-   callback matches the current run nonce, message ID, chat and reviewer user ID.
+   The scenario is marked complete directly upon successful Excel tick.
+
+For a comprehensive step-by-step walkthrough in Vietnamese, see [AUTOMATION_GUIDE.md](AUTOMATION_GUIDE.md).
 
 The default full output duration follows the generated playlist. Set a preview
 duration for testing or increase music count for a longer soundtrack. No YouTube
@@ -111,6 +111,12 @@ resume after rendering. A submitted generative request requires an explicit
 resubmission checkbox before retrying. Cancel stops local automation, but a request
 already submitted to a remote generator may still finish normally.
 
+If a Flow Music download fails, click **Tiếp tục bước đang dừng** to collect
+the recorded song. For older tasks without a recorded link, open the matching
+take in the original session, copy its song link, and paste it under **Khôi phục
+khi lỗi dịch vụ** before continuing. Reload the installed main extension on
+Chrome's extensions page after updating the bridge and extension code.
+
 Original Chrome downloads remain in `Downloads/LoFiAutomation/<task-id>` and
 existing caches/files are not deleted. The existing personal Chrome profiles and
 their normal cache locations are not moved. Missing login, quota, unsupported model
@@ -120,7 +126,7 @@ or changed page controls stops the current scenario for inspection.
 
 Local tests cover the approval boundary, wrong/replayed Telegram callbacks,
 profile-role isolation, no duplicate claims, restart behavior, workbook parsing,
-audio validation, two image passes in an actual Chrome DOM fixture, safe/idempotent
+audio validation, single-prompt image transfer in a Chrome DOM fixture, safe/idempotent
 Excel-checkbox behavior in a DOM fixture, and existing media pipeline regressions.
 
 Authenticated live selectors for Excel, the project's ChatGPT composer, Google Flow

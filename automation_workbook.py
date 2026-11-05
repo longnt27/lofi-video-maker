@@ -60,10 +60,10 @@ def queue_records(path: Path) -> list[dict]:
         if str(cells.get('H', '')).strip() == 'BO_QUA': continue
         if key not in prompts or key not in youtube: raise ValueError(f'Missing prompt or YouTube row: {key}')
         p, y = prompts[key][1], youtube[key][1]
-        if any(not str(p.get(column, '')).strip() for column in ('B', 'C', 'D', 'E')):
+        if any(not str(p.get(column, '')).strip() for column in ('B', 'D', 'E')):
             raise ValueError(f'Missing image/animation/music prompt: {key}')
         output.append({'id': key, 'row': row, 'checkbox_cell': f'I{row}', 'sheet': 'Kich_ban',
-            'title': str(cells.get('B') or key), 'image_prompt_1': p['B'], 'image_prompt_2': p['C'],
+            'title': str(cells.get('B') or key), 'image_prompt_1': p['B'],
             'animation_prompt': p['D'], 'music_prompt': p['E'], 'track_title': p.get('F', key),
             'youtube': dict(zip(('title', 'description', 'tags', 'hashtags'), (y.get(c, '') for c in 'BCDE')))})
     if not output and not indexed('Kich_ban'):

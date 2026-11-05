@@ -7,8 +7,12 @@ class Telegram:
         self.token = token
         self.chat_id = str(chat_id)
         self.reviewer_id = str(reviewer_id or chat_id)
-        if not token or not self.chat_id.lstrip('-').isdigit() or not self.reviewer_id.isdigit():
-            raise ValueError('Configure Telegram bot token, chat ID and reviewer user ID')
+        if not token:
+            raise ValueError('Chưa lưu Bot token Telegram. Điền token rồi bấm Lưu cấu hình.')
+        if not self.chat_id.lstrip('-').isdigit():
+            raise ValueError('Thiếu Chat ID Telegram hoặc ID không hợp lệ. Mở cuộc chat với bot, gửi /start rồi điền Chat ID nhận thông báo.')
+        if not self.reviewer_id.isdigit():
+            raise ValueError('Cần User ID người duyệt hợp lệ. Với chat riêng, bạn có thể để trống ô User ID.')
 
     def call(self, method, data=None, files=None):
         # Never expose the token-bearing URL through HTTP exception messages/logs.

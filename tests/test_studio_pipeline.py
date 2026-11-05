@@ -34,6 +34,8 @@ class StudioPipelineTests(unittest.TestCase):
         for name, hz in [("10-last.wav", 660), ("2-middle.wav", 440), ("01-first.wav", 220)]:
             self.ffmpeg("-f", "lavfi", "-i", f"sine=frequency={hz}:duration=1", self.music/name)
         self.source = self.root/"source.mp4"
+        self.image = self.root/"source.png"
+        self.ffmpeg("-f", "lavfi", "-i", "testsrc2=s=64x48:d=0.04", "-frames:v", "1", self.image)
         self.ffmpeg("-f", "lavfi", "-i", "testsrc2=s=64x48:r=24:d=0.5", "-c:v", "libx264", self.source)
 
     def ffmpeg(self, *args):
@@ -172,6 +174,45 @@ class StudioPipelineTests(unittest.TestCase):
         finally:
             if runner.active is not None:
                 runner.cancel()
+
+
+    def test_image_mix_uses_image_preparation_and_has_playlist_audio(self):
+        config = self.config(kind="image_mix")
+        config["source"] = str(self.image)
+        config["is_image"] = True
+        destination = self.root/"image-output"
+        config["output"] = str(destination/"finished_img.mp4")
+        import lofi_maker
+        with patch.object(studio, "prepare_image_clip", return_value=self.source), \
+             patch.object(lofi_maker, "render_fast_without_dust", wraps=lofi_maker.render_fast_without_dust) as render:
+            studio.run_job(config)
+        self.assertEqual(Path(render.call_args.args[2]).parent, destination)
+        state = studio.read_state(Path(config["job_dir"]))
+        self.assertEqual(state["status"], "done")
+        from fallin_preprocess import media_info
+        self.assertAlmostEqual(media_info(Path(config["output"]))["duration"], 2.8, delta=0.15)
+        streams = json.loads(subprocess.check_output(["ffprobe", "-v", "error", "-show_streams", "-of", "json", config["output"]]))["streams"]
+        self.assertTrue(any(s["codec_type"] == "audio" for s in streams))
+
+    def test_image_clip_preparation_and_cache(self):
+        import fallin_preprocess as fallin
+        config = self.config("image_mix")
+        config["source"] = str(self.image)
+        config["fps"] = 24
+        scratch = self.root/"scratch_img"
+        scratch.mkdir()
+        weight = self.root/"fake_fallin.onnx"
+        weight.write_bytes(b"mock weights")
+        import numpy as np
+        fake_frame = np.zeros((96, 128, 3), dtype=np.uint8)
+        processor = types.SimpleNamespace(device="cpu", weight=lambda _: weight,
+                                          upscale=lambda img, sz: fake_frame)
+        with patch.object(fallin, "FrameProcessor", return_value=processor):
+            first = studio.prepare_image_clip(config, scratch, lambda *a: None)
+            self.assertTrue(first.is_file())
+            # Second call should use cache without error
+            second = studio.prepare_image_clip(config, scratch, lambda *a: None)
+            self.assertEqual(first, second)
 
 
 if __name__ == "__main__":

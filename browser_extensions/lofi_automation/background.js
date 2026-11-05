@@ -12,7 +12,7 @@ function identity(){
 async function api(path,body){
   const instance=await identity();
   const response=await fetch(LOFI_CONFIG.url+'/bridge/'+path,{method:body===undefined?'GET':'POST',
-    headers:{'Authorization':'Bearer '+LOFI_CONFIG.token,'X-LoFi-Instance':instance,'Content-Type':'application/json'},
+    headers:{'Authorization':'Bearer '+LOFI_CONFIG.token,'X-LoFi-Instance':instance,'X-LoFi-Single-Image':'3','Content-Type':'application/json'},
     ...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(25000)});
   if(!response.ok)throw new Error(await response.text());return response.json();
 }
@@ -27,10 +27,13 @@ const sendKey=async(key,text)=>{
   await chrome.debugger.sendCommand(target,'Input.dispatchKeyEvent',{type:'keyUp',...params});
 };
 // A referrer may be origin-only. Never use it to capture another tab's download.
-function match(item){return !!watch&&watch.verifiedUrls.has(item.url);}
+function match(item){return !!watch&&[item.url,item.finalUrl].some(url=>url&&watch.verifiedUrls.has(url));}
 function potential(item){if(!watch)return false;if(match(item))return true;
   try{return new URL(item.referrer).origin===new URL(watch.url).origin||item.url?.startsWith('blob:'+new URL(watch.url).origin+'/');}catch{return false;}}
 chrome.downloads.onDeterminingFilename.addListener((item,suggest)=>{
+  if(watch?.direct && item.byExtensionId===chrome.runtime.id && item.url===watch.url){
+    suggest({filename:`LoFiAutomation/${watch.id}/asset.xlsx`,conflictAction:'uniquify'});return;
+  }
   const ext=(item.filename.match(/\.(xlsx|png|jpe?g|webp|mp4|mp3|wav|m4a|flac)$/i)||[])[1];
   if(!ext||!potential(item)){suggest();return;}
   const expected=watch;
@@ -48,7 +51,7 @@ chrome.debugger.onEvent.addListener((source,method,params)=>{
 });
 async function downloaded(id){
   if(!watch||watch.id!==id)throw new Error('Download not armed');
-  const end=Date.now()+120000;
+  const end=Date.now()+(active?.kind==='collect_video'||active?.kind==='flow_video'?600000:120000);
   while(Date.now()<end){
     if((await api('state',{id})).cancel_requested)throw new Error('Stopped');
     if(watch.downloadId!==undefined){const [d]=await chrome.downloads.search({id:watch.downloadId});
@@ -65,12 +68,26 @@ async function release(close=false){
 async function poll(){
   if(polling||active||releasing)return {ok:true};polling=true;let claimed=false,task;
   try{
-    ({task}=await api('next'));if(!task)return {ok:true};
+    const next=await api('next');
+    if(next.revision && next.revision!==LOFI_CONFIG.revision){
+      const saved=await chrome.storage.local.get('reloadRevision');
+      if(saved.reloadRevision!==next.revision){
+        await chrome.storage.local.set({reloadRevision:next.revision});
+        chrome.runtime.reload();
+      }
+      return {ok:false,error:'Reload the Studio-generated extension folder.'};
+    }
+    task=next.task;if(!task)return {ok:true};
     await api('claim',{id:task.id});claimed=true;
-    const tab=await chrome.tabs.create({url:task.payload.url,active:false});
+    // A background tab can defer ChatGPT's conversation rendering indefinitely.
+    // Give the job an active tab in its own unfocused window.
+    const window=await chrome.windows.create({url:task.payload.url,type:'normal',focused:false});
+    const tab=window.tabs?.[0]||(await chrome.tabs.query({windowId:window.id}))[0];
+    if(!tab)throw new Error('Chrome did not create the automation tab.');
     active={id:task.id,tab:tab.id,kind:task.kind,url:task.payload.url};await chrome.storage.session.set({active});
     await chrome.debugger.attach({tabId:tab.id},'1.3');
     await chrome.debugger.sendCommand({tabId:tab.id},'Page.enable');
+    try{await chrome.debugger.sendCommand({tabId:tab.id},'Page.setDownloadBehavior',{behavior:'allow'});}catch{}
     const deadline=Date.now()+90000;let frame;
     while(Date.now()<deadline){
       const choices=frames.get(tab.id)||[];frame=choices.find(f=>f.kinds.includes(task.kind));if(frame)break;
@@ -95,9 +112,29 @@ chrome.runtime.onMessage.addListener((m,sender,reply)=>{
     if(!active){const saved=await chrome.storage.session.get('active');active=saved.active||null;}
     if(!active||m.id!==active.id||sender.tab?.id!==active.tab)throw new Error('Not the active task tab');
     if(m.type==='state')return api('state',{id:m.id});
-    if(m.type==='progress')return api('progress',{id:m.id,message:m.message||m.phase,submitted:m.submitted||['submitting','submitted','downloading'].includes(m.phase),session_url:active.kind.startsWith('excel')?active.url:sender.url});
+    if(m.type==='progress')return api('progress',{id:m.id,message:m.message||m.phase,submitted:m.submitted||['submitting','submitted','downloading'].includes(m.phase),session_url:active.kind.startsWith('excel')?active.url:sender.url,song_url:m.song_url});
+    if(m.type==='image-file')return api('image-file',{id:m.id,image:m.image});
     if(m.type==='assets')return api('assets/'+m.id);
+    if(m.type==='download-workbook'){
+      const workbook=new URL(active.url);
+      const url=new URL('download.aspx',workbook);
+      const documentId=workbook.searchParams.get('sourcedoc')?.replace(/^\{|\}$/g,'');
+      if(active.kind!=='excel_snapshot'||workbook.origin!=='https://cmcuni-my.sharepoint.com'||
+         !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(documentId)){
+        throw new Error('Invalid SharePoint workbook download');
+      }
+      url.pathname=url.pathname.replace(/^\/:x:\/r\//,'/');
+      url.searchParams.set('UniqueId',documentId);
+      watch={id:m.id,url:url.href,direct:true,verifiedUrls:new Set(),candidates:[]};
+      watch.downloadId=await chrome.downloads.download({url:url.href,filename:`LoFiAutomation/${m.id}/asset.xlsx`,saveAs:false});
+      return downloaded(m.id);
+    }
     if(m.type==='key'){await sendKey(m.key,m.text);return {ok:true};}
+    if(m.type==='hover'){
+      if(!Number.isFinite(m.x)||!Number.isFinite(m.y))throw new Error('Invalid pointer target');
+      await chrome.debugger.sendCommand({tabId:active.tab},'Input.dispatchMouseEvent',{type:'mouseMoved',x:m.x,y:m.y});
+      return {ok:true};
+    }
     if(m.type==='arm-download'){watch={id:m.id,url:sender.url,verifiedUrls:new Set(),candidates:[]};return {ok:true};}
     if(m.type==='finish-download')return downloaded(m.id);
     if(m.type==='diagnostic')return api('diagnostic',{id:m.id,text:m.text});
