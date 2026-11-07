@@ -181,6 +181,84 @@ class JobRunner:
             return state
 
 
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+
+def is_image_path(path: str | Path) -> bool:
+    return Path(path).suffix.lower() in IMAGE_EXTENSIONS
+
+
+def prepare_image_clip(config: dict, scratch: Path, emit) -> Path:
+    from fallin_preprocess import FrameProcessor, VERSION, file_signature, media_info, output_size, nvenc_available
+    import cv2
+    source = Path(config["source"])
+    if not source.is_file():
+        raise FileNotFoundError(f"Không tìm thấy file ảnh: {source}")
+    img = cv2.imread(str(source))
+    if img is None:
+        raise ValueError(f"Không thể đọc file ảnh: {source}")
+    h, w = img.shape[:2]
+    size = output_size(w, h, config.get("edge"))
+    processor = FrameProcessor(Path(config["home"])/"models", config["variant"], config["device"], 512 if config["tile"] else 0)
+    fps = int(config.get("fps") or 30)
+    if fps not in (24, 25, 30, 50, 60):
+        fps = 30
+    weights = [processor.weight("fallin")]
+    signature = {
+        "version": VERSION + "-image",
+        "source": file_signature(source),
+        "weights": [file_signature(p) for p in weights],
+        "variant": config.get("variant"),
+        "edge": config.get("edge"),
+        "tile": config.get("tile"),
+        "fps": fps,
+        "device": processor.device,
+    }
+    key = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()[:24]
+    folder = Path(config["home"])/"prepared"/f"img_{key}"
+    dest, meta = folder/"clip.mp4", folder/"metadata.json"
+    if dest.is_file() and meta.is_file():
+        try:
+            cached = media_info(dest)
+            saved = json.loads(meta.read_text(encoding="utf-8"))
+            if (saved["signature"] == signature and cached["width"] == saved["width"]
+                    and cached["height"] == saved["height"] and cached["fps"] == Fraction(saved["fps"])
+                    and cached["duration"] >= 5):
+                emit("Dùng lại clip ảnh đã upscale từ cache")
+                return dest
+        except (OSError, ValueError, KeyError, subprocess.CalledProcessError):
+            pass
+    emit("Upscale ảnh bằng Fallin AI", 0)
+    upscaled = processor.upscale(img, size)
+    emit("Tạo clip nền từ ảnh đã upscale", 0.8)
+    upscaled_path = scratch/"upscaled.png"
+    cv2.imwrite(str(upscaled_path), upscaled)
+    partial = scratch/"prepared.mp4"
+    encode = [
+        "ffmpeg", "-v", "error", "-y",
+        "-loop", "1",
+        "-framerate", str(fps),
+        "-i", str(upscaled_path),
+        "-t", "10",
+        "-an",
+    ]
+    encode += (["-c:v", "h264_nvenc", "-preset", "p4", "-rc", "vbr", "-cq", "17", "-b:v", "0"]
+               if nvenc_available() else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "16"])
+    encode += ["-pix_fmt", "yuv420p", "-movflags", "+faststart", str(partial)]
+    subprocess.run(encode, check=True)
+    result = media_info(partial)
+    folder.mkdir(parents=True, exist_ok=True)
+    partial.replace(dest)
+    meta.write_text(json.dumps({
+        "signature": signature,
+        "width": result["width"],
+        "height": result["height"],
+        "fps": str(result["fps"]),
+        "duration": result["duration"],
+    }), encoding="utf-8")
+    return dest
+
+
 def prepare_clip(config: dict, scratch: Path, emit) -> Path:
     from fallin_preprocess import FrameProcessor, VERSION, file_signature, media_info, stream_video
     source = Path(config["source"])
@@ -245,27 +323,33 @@ def run_job(config: dict) -> None:
     try:
         status.configure(job_dir/"pipeline.log", total_stages=0)
         source_gain = validate_gain(float(config.get("source_audio_volume", 10)) / 100)
+        is_image = bool(config.get("is_image") or (config.get("kind") in ("image_mix", "image_clip")) or is_image_path(config.get("source", "")))
+        if is_image:
+            config["is_image"] = True
+            config["keep_source_audio"] = False
+            config["seamless"] = False
+
         playlist = None
-        if config["kind"] == "mix":
+        if config["kind"] in ("mix", "image_mix"):
             emit("Đọc thư mục nhạc")
             playlist = collect_music(config["music"], config["recursive"], config["shuffle"], config["seed"], config["crossfade"])
-        emit("Chuẩn bị model và clip nền")
-        prepared = prepare_clip(config, scratch, emit)
+        emit("Chuẩn bị model và ảnh nền" if is_image else "Chuẩn bị model và clip nền")
+        prepared = prepare_image_clip(config, scratch, emit) if is_image else prepare_clip(config, scratch, emit)
         info = media_info(prepared)
-        if config["kind"] == "clip":
+        if config["kind"] in ("clip", "image_clip"):
             shutil.copy2(prepared, partial)
         else:
             fps = int(info["fps"])
             if info["fps"] != fps or fps not in (24, 25, 30, 50, 60):
                 raise ValueError("Chọn FPS nguyên hỗ trợ trước khi xuất video nhạc dài.")
             ambient = None
-            if config.get("keep_source_audio", True) and source_gain:
+            if not is_image and config.get("keep_source_audio", True) and source_gain:
                 emit("Chuẩn bị tiếng môi trường từ video gốc")
                 ambient = prepare_ambient_loop(Path(config["source"]), scratch/"ambient.flac",
                                                seconds=info["duration"])
                 if ambient is None:
                     emit("Video gốc không có tiếng; dùng nhạc nền")
-            if config["seamless"]:
+            if not is_image and config["seamless"]:
                 emit("Làm mượt điểm nối loop")
                 prepared = prepare_seamless_master(prepared, fps=fps, overlap=config["overlap"],
                     section_seconds=60, align_sections=False, cache=Path(config["home"]), work=scratch)

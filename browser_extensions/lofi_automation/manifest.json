@@ -1,0 +1,8 @@
+{
+  "manifest_version":3,"version":"0.3.2","name":"LoFi Studio Automation",
+  "description":"Dedicated background tabs for the local LoFi pipeline. Each profile has its own role and key.",
+  "permissions":["alarms","downloads","storage","debugger"],"host_permissions":[],
+  "background":{"service_worker":"background.js"},
+  "action":{"default_popup":"popup.html","default_title":"LoFi Studio Automation"},
+  "content_scripts":[{"matches":[],"js":["shared.js","music.js","providers.js"],"all_frames":true,"run_at":"document_idle"}]
+}

@@ -56,7 +56,10 @@ class StudioStorageTests(unittest.TestCase):
 
     @unittest.skipUnless(importlib.util.find_spec("gradio"), "Gradio required")
     def test_fresh_gradio_process_uses_selected_root_and_worker_inherits_it(self):
-        home = self.root/"custom-storage"
+        # Exercise a non-canonical spelling on every OS, in addition to macOS
+        # /var aliases and Windows short names supplied by TemporaryDirectory.
+        (self.root/"path-alias").mkdir()
+        home = self.root/"path-alias"/".."/"custom-storage"
         code = (
             "import json,os,subprocess,sys,tempfile;"
             f"sys.path.insert(0,{str(ROOT)!r});"
@@ -74,16 +77,17 @@ class StudioStorageTests(unittest.TestCase):
             capture_output=True, text=True, timeout=90)
         self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
         data = json.loads(result.stdout.strip().splitlines()[-1])
-        # Compare filesystem identity, not textual spelling: macOS uses
-        # /var -> /private/var symlinks; Windows may expand 8.3 short names
-        # (RUNNER~1) into the equivalent long user profile path.
-        self.assertTrue(Path(data["upload"]).samefile(home/"uploads"),
-                        f"Gradio upload storage escaped chosen folder: {data['upload']}")
-        self.assertTrue(Path(data["temp"]).samefile(home/"tmp"),
-                        f"Process temp storage escaped chosen folder: {data['temp']}")
-        self.assertTrue(Path(data["child_temp"]).samefile(home/"tmp"),
-                        f"Worker temp storage escaped chosen folder: {data['child_temp']}")
+        # Compare existing filesystem locations, including the drive/device,
+        # rather than spellings (symlinks, Windows 8.3 names, or '..'). Missing
+        # directories and a fallback to a different temp root must still fail.
+        for key, folder in (("upload", "uploads"), ("temp", "tmp"),
+                            ("child_temp", "tmp")):
+            with self.subTest(location=key):
+                actual, expected = Path(data[key]), home/folder
+                self.assertTrue(actual.samefile(expected),
+                                f"{key}: {actual} is not {expected}")
 
 
 if __name__ == "__main__":
     unittest.main()
+

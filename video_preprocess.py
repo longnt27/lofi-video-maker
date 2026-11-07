@@ -475,7 +475,7 @@ def find_existing_upscaler(
         # siblings. Do a bounded one-level scan, not a recursive disk search.
         sibling_parents = list(_unique_paths([base.parent for base in roots]))
         for parent in sibling_parents:
-            if parent == Path("/") or parent == Path.home().parent:
+            if parent.parent == parent or parent == Path.home().parent:
                 continue
             candidates.extend(sorted(parent.glob("*/bin/" + NCNN_NAME)))
 

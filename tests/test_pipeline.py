@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -30,6 +31,19 @@ class TestPreprocess(unittest.TestCase):
              '-i', 'testsrc2=size=128x80:rate=24:duration=0.5',
              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(self.source)])
         self.fps = 24
+        if os.name == 'nt':
+            # Windows cannot launch the Python shebang used by the fake NCNN binaries.
+            execute = pre.exec_cmd
+            def run_fixture(args, **kwargs):
+                path = Path(args[0])
+                if path.is_absolute() and path.is_relative_to(self.path) and path.is_file():
+                    with path.open('rb') as fixture:
+                        if fixture.read(2) == b'#!':
+                            args = [sys.executable, *args]
+                return execute(args, **kwargs)
+            launcher = patch.object(pre, 'exec_cmd', run_fixture)
+            launcher.start()
+            self.addCleanup(launcher.stop)
 
     def test_box_validation(self):
         self.assertEqual(pre.parse_box('5, 10, 20, 30'), (5, 10, 20, 30))
@@ -155,7 +169,7 @@ for f in Path(a.i).glob('frame_*.png'):
         folder = project / 'bin'
         models = folder / 'models'
         models.mkdir(parents=True)
-        binary = folder / 'realesrgan-ncnn-vulkan'
+        binary = folder / pre.NCNN_NAME
         binary.write_text('#!/bin/sh\nexit 0\n')
         binary.chmod(0o755)
         for ext in ('.bin', '.param'):
@@ -175,7 +189,7 @@ for f in Path(a.i).glob('frame_*.png'):
         project = self.path / 'other_project'
         folder = project / 'bin'
         folder.mkdir(parents=True)
-        binary = folder / 'realesrgan-ncnn-vulkan'
+        binary = folder / pre.NCNN_NAME
         binary.write_text('#!/bin/sh\nexit 0\n')
         binary.chmod(0o755)
         with self.assertRaisesRegex(FileNotFoundError, 'missing model files'):
@@ -186,7 +200,7 @@ for f in Path(a.i).glob('frame_*.png'):
         folder = project / 'bin'
         models = folder / 'models'
         models.mkdir(parents=True)
-        binary = folder / 'realesrgan-ncnn-vulkan'
+        binary = folder / pre.NCNN_NAME
         binary.write_text('''#!/usr/bin/env python3
 import argparse
 from pathlib import Path
