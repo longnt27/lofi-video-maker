@@ -70,6 +70,50 @@ def test_music_collection_opens_click_submenu_and_keeps_same_title_takes_separat
     assert page.evaluate('events.map(x=>x.type).slice(-2)')==['mp3','finish-download']
 
 
+@pytest.mark.parametrize('recover',[False,True])
+def test_music_chooses_first_preference_for_current_prompt(page,recover):
+    page.set_content('''<main><section id="older"><h2>Which do you prefer?</h2>
+        <button>No Preference</button><button>CHOOSE</button><button>CHOOSE</button></section>
+        <article><a href="https://www.flowmusic.app/song/old">Old take</a>
+        <button aria-label="Play Old take"></button><button aria-label="More options for Old take"></button></article>
+        <div id="turns"></div><textarea aria-label="Chat message"></textarea>
+        <button id="send" aria-label="Send message">Send</button>
+        <button id="download" hidden>Download audio</button><button id="format" hidden>MP3</button></main>''')
+    scripts(page)
+    page.add_script_tag(path=str(ROOT/'browser_extensions/flow_music/content.js'))
+    page.evaluate('''recover => {
+      window.events=[];window.chosen=[];window.sent=0;
+      const editor=document.querySelector('textarea');
+      window.chrome={runtime:{sendMessage:async m=>{
+        events.push(m);
+        if(m.type==='key'&&m.text!==undefined)editor.value=m.text;
+        return {ok:true,cancel_requested:false};
+      }}};
+      document.querySelectorAll('#older button').forEach(el=>el.onclick=()=>chosen.push('older'));
+      const createPreference=text=>{
+        const turns=document.querySelector('#turns');
+        const prompt=document.createElement('div');prompt.textContent=text;turns.append(prompt);
+        const panel=document.createElement('section');
+        panel.innerHTML='<h2>Which do you prefer?</h2><button>No Preference</button><div><button>CHOOSE</button></div><div><button>CHOOSE</button></div>';
+        turns.append(panel);
+        [...panel.querySelectorAll('button')].forEach((el,index)=>el.onclick=()=>{
+          chosen.push(index);
+          panel.remove();
+          turns.insertAdjacentHTML('beforeend','<article><a href="https://www.flowmusic.app/song/selected">Chosen take</a><button aria-label="Play Chosen take"></button><button id="more" aria-label="More options for Chosen take"></button></article>');
+          document.querySelector('#more').onclick=()=>document.querySelector('#download').hidden=false;
+        });
+      };
+      document.querySelector('#send').onclick=()=>{sent++;createPreference(editor.value);};
+      document.querySelector('#download').onclick=()=>document.querySelector('#format').hidden=false;
+      if(recover)createPreference('Warm piano.\\n\\nCreate the finished music now. Do not ask follow-up questions.');
+    }''',recover)
+    payload={'prompt':'Warm piano.','instrumental':False,'format':'mp3','timeout':8,'recover_preference':recover}
+    page.evaluate('payload=>lofiProviderTest.providerMap[payload.recover_preference?"collect_music":"flow_music"]({id:"job",payload})',payload)
+    assert page.evaluate('chosen')==[1]  # The first CHOOSE, after No Preference.
+    assert page.evaluate('sent')==(0 if recover else 1)
+    assert page.evaluate('events.find(m=>m.song_url).song_url')=='https://www.flowmusic.app/song/selected'
+    assert page.evaluate('events.at(-1).type')=='finish-download'
+
 def test_flow_menu_radio_options_with_icon_text_are_found(page):
     page.set_content('''<div role="menuitemradio">videocam\nVideo</div>
       <div role="menuitemradio">chrome_extension\nThành phần</div>

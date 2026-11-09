@@ -12,6 +12,11 @@ the existing video-processing UI alone. No new Python dependencies are required.
 
 ## Local Excel workbook
 
+Set **Số kịch bản mỗi lượt chạy** to run that many scenarios in sequence.
+Studio reads the queue again after each successful export, Excel tick and
+cleanup. It stops at the chosen count, when the queue is empty, or when a step
+needs attention. **Tiếp tục** resumes the current run with its original count.
+
 Enter the workbook's full `.xlsx` path in **File Excel trên máy**.
 Studio reads a fresh snapshot at the start of each scenario and writes the
 completion checkbox directly to that same local file after rendering succeeds.
@@ -64,12 +69,15 @@ run. Leaving the path empty uses the existing Excel web workflow described below
    the image there. Retries reuse the saved project. Select the configured
    Omni 1.1 Flash model, Video/Ingredients, 16:9, 720p, x1 and 10 seconds. If a required option is absent,
    stop rather than silently substituting another model. Download Original size.
+   If the `Prompts` sheet contains a `thumbnail_prompt` for the scenario,
+   Studio then sends the clean scene image and that prompt to ChatGPT.
+   The downloaded thumbnail is a separate file and is kept beside `mix.mp4`.
 5. Create the configured number of Flow Music tracks from the workbook prompt
    in the configured session. The extension records the selected song link before
    opening the download menu so a retry can download that same take.
 6. Run the existing `studio_pipeline.py`: LaMa → tiled Fallin → seamless loop →
-   playlist mix, with source ambience at 10% by default. Only the final mix goes
-   to the output folder. Studio keeps the source media and render cache until
+   playlist mix, with source ambience at 10% by default. Studio saves the final
+   mix and the optional thumbnail to the output folder. It keeps the source media and render cache until
    the final mix is saved and the Excel checkbox is verified.
 7. Reopen the cloud workbook, select the script sheet, verify the ID in column A,
    and check the corresponding column-I native checkbox only if currently FALSE.
@@ -142,7 +150,7 @@ Chrome's extensions page after updating the bridge and extension code.
 
 After verifying the Excel checkbox, Studio removes the scenario's downloaded
 images, clips, tracks and temporary render media. The output folder contains
-`mix.mp4`. Studio retries cleanup if a file is open and keeps the scenario
+`mix.mp4` and the thumbnail when generated. Studio retries cleanup if a file is open and keeps the scenario
 materials available while a failed run can still be resumed.
 
 ## Validation status

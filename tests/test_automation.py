@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from automation_engine import Engine
-from automation_bridge import create_app, direct_workbook_download, matches_reference
+from automation_bridge import create_app, direct_workbook_download, matches_reference, is_task_reference
 from automation_telegram import Telegram
 from automation_workbook import queue_records, mark_completed, read_sheets
 
@@ -194,6 +194,47 @@ def test_local_workbook_flow_and_retry_after_excel_lock(engine, workbook, tmp_pa
     assert read_sheets(workbook)['Kich_ban'][8]['I'] is True
 
 
+@pytest.mark.parametrize('limit,expected',[(1,1),(2,2),(5,2)])
+def test_batch_runs_until_limit_or_workbook_is_empty(engine,workbook,tmp_path,monkeypatch,limit,expected):
+    engine.configure({'excel_path':str(workbook),'scenario_count':limit})
+    def render():
+        output=tmp_path/f'{engine.state["record"]["id"]}.mp4'
+        output.write_bytes(b'completed media fixture')
+        engine.state.update(status='rendering',output=str(output),render_dir=str(tmp_path/'render'))
+        engine.worker=Mock()
+        engine.worker.poll.return_value=0
+        engine.worker.returncode=0
+        engine.worker_log=io.BytesIO()
+    monkeypatch.setattr(engine,'start_render',render)
+    monkeypatch.setattr('studio_pipeline.read_state',lambda folder:{'status':'done'})
+    engine.start(local_review=True)
+    run_id=engine.state['run_id']
+    for index in range(expected):
+        engine.process_local_task()
+        record=engine.state['record']
+        assert record['id']==f'LOFI-{index+1:03d}'
+        assert engine.state['run_id']==run_id
+        assert 'output' not in engine.state
+        finish(engine,{'path':str(tmp_path/'image.png')})
+        finish(engine,{'url':'https://flow.google.com/project/12345678-aaaa-bbbb-cccc-123456789abc'})
+        finish(engine,{'path':str(tmp_path/'video.mp4')})
+        if index==0:
+            engine.pause()
+            engine.configure({'scenario_count':1})
+            engine.resume()
+            assert engine.state['scenario_count']==limit
+        finish(engine,{'path':str(tmp_path/'music.mp3')})
+        engine.tick_render()
+        engine.process_local_task()
+        assert read_sheets(workbook)['Kich_ban'][record['row']]['I'] is True
+        assert len(engine.state['completed'])==index+1
+    engine.process_local_task()
+    assert engine.state['status']=='complete'
+    assert len(engine.state['completed'])==expected
+    if limit>expected:
+        assert 'Không còn kịch bản' in engine.state['message']
+
+
 def test_direct_excel_download_accepts_only_fresh_named_workbook(tmp_path,monkeypatch):
     from automation_engine import now
     monkeypatch.setattr('flow_music_browser.download_directory',lambda profile:tmp_path)
@@ -218,6 +259,61 @@ def test_resized_reference_cannot_become_generated_asset(tmp_path):
     assert cv2.imwrite(str(ref),original)
     assert matches_reference(cv2.resize(original,(72,48)),[str(ref)])
     assert not matches_reference(cv2.flip(original,0),[str(ref)])
+
+
+def test_thumbnail_reference_filter_allows_local_text_edit(tmp_path):
+    import cv2
+    import numpy as np
+    base = np.full((720,1280,3), 64, dtype=np.uint8)
+    path = tmp_path/'base.png'
+    assert cv2.imwrite(str(path),base)
+    task = {'payload':{'purpose':'thumbnail','assets':[str(path)]}}
+    assert is_task_reference(base,task,[])
+    titled = base.copy()
+    cv2.putText(titled,'MEADOW SUNRISE',(510,360),cv2.FONT_HERSHEY_SIMPLEX,0.7,(245,245,245),2)
+    assert not is_task_reference(titled,task,[])
+
+
+def test_thumbnail_recovery_preserves_clean_flow_input_and_keeps_export(engine,workbook,tmp_path,monkeypatch):
+    e=engine
+    e.start()
+    finish(e,{'path':str(workbook)})
+    e.state['record']['thumbnail_prompt']='Add QUIET BOOKSHOP to the supplied illustration'
+    image=tmp_path/'clean.png'
+    image.write_bytes(b'clean image')
+    finish(e,{'path':str(image)})
+    finish(e,{'url':'https://flow.google.com/project/12345678-aaaa-bbbb-cccc-123456789abc'})
+    assert e.task(e.state['task_id'])['payload']['image']==str(image)
+    finish(e,{'path':str(tmp_path/'flow.mp4')})
+    assert e.state['stage']=='thumbnail'
+    task=e.claim(e.state['task_id'],'gpt')
+    assert task['payload']['assets']==[str(image)]
+    assert task['payload']['prompt1']==e.state['record']['thumbnail_prompt']
+    conversation='https://chatgpt.com/c/12345678-aaaa-bbbb-cccc-123456789abc'
+    e.progress(task['id'],'gpt','Sent thumbnail prompt',True,conversation)
+    e.fail_task(task['id'],'gpt','Transfer interrupted')
+    collect=e.task(e.state['task_id'])
+    assert collect['kind']=='collect_image' and collect['payload']['purpose']=='thumbnail'
+    thumbnail=e.home/'assets'/collect['id']/'asset.png'
+    thumbnail.parent.mkdir(parents=True)
+    thumbnail.write_bytes(b'title image')
+    finish(e,{'path':str(thumbnail)})
+    assert e.state['artifacts']['image']==str(image)
+    assert e.state['stage']=='flow_music'
+    mix=Path(e.settings.output_dir)/f'LOFI-001_{e.state["run_id"]}'/'mix.mp4'
+    mix.parent.mkdir(parents=True)
+    mix.write_bytes(b'final mix')
+    monkeypatch.setattr('fallin_preprocess.media_info',lambda path:{'duration':10})
+    monkeypatch.setattr('flow_music_browser.download_directory',lambda profile:tmp_path/'downloads')
+    track=tmp_path/'track.mp3'
+    track.write_bytes(b'music')
+    finish(e,{'path':str(track)})
+    exported=mix.with_name('thumbnail.png')
+    assert exported.read_bytes()==b'title image'
+    finish(e,{'checked':True})
+    assert e.state['status']=='complete'
+    assert not thumbnail.exists()
+    assert set(mix.parent.iterdir())=={mix,exported}
 
 
 def test_cleanup_runs_after_tick_and_keeps_final_mix_and_unrelated_files(engine, tmp_path):

@@ -103,6 +103,7 @@ def queue_records(path: Path) -> list[dict]:
         output.append({'id': key, 'row': row, 'checkbox_cell': f'I{row}', 'sheet': 'Kich_ban',
             'title': str(cells.get('B') or key), 'image_prompt_1': p['B'],
             'animation_prompt': p['D'], 'music_prompt': p['E'], 'track_title': p.get('F', key),
+            'thumbnail_prompt': str(p.get('G') or '').strip(),
             'youtube': dict(zip(('title', 'description', 'tags', 'hashtags'), (y.get(c, '') for c in 'BCDE')))})
     if not output and not indexed('Kich_ban'):
         raise ValueError('No LOFI IDs found in workbook')

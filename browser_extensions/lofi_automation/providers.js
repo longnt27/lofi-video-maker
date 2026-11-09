@@ -22,7 +22,8 @@
 
   async function transferImage(task,turn){
     const id=task.id;
-    await L.progress(id,'ChatGPT: đang lọc ảnh tham chiếu để lấy ảnh mới');
+    const message=task.payload.purpose==='thumbnail'?'ChatGPT: đang lấy thumbnail có chữ':'ChatGPT: đang lọc ảnh tham chiếu để lấy ảnh mới';
+    await L.bridge('progress',id,{message,session_url:location.href});
     const skipped=new Set(), deadline=Date.now()+task.payload.timeout*1000;
     while(Date.now()<deadline){
       await L.check(id);
@@ -85,7 +86,7 @@
     }catch{throw new Error('ChatGPT: project chưa tải xong khung nhập sau 120 giây. Kiểm tra đăng nhập và quyền truy cập project.');}
     const form=composer.closest('form,[data-type="unified-composer"]');
     if(!form)throw new Error('Chưa tìm thấy khung nhập prompt ChatGPT.');
-    await L.progress(id,'ChatGPT: đính kèm ảnh tham chiếu');
+    await L.progress(id,p.purpose==='thumbnail'?'ChatGPT: đính kèm ảnh sạch để tạo thumbnail':'ChatGPT: đính kèm ảnh tham chiếu');
     const file=await L.until(()=>L.all('input[type="file"]',form).find(input=>input.multiple)||
       L.all('input[type="file"]').find(input=>input.multiple&&(!input.accept||input.accept.includes('image'))));
     await L.upload(file,(await L.bridge('assets',id)).assets);
@@ -353,12 +354,17 @@
     return [];
   }
   providerMap.collect_music=async task=>{
-    if(!task.payload.song_url)throw new Error('Thiếu link bài nhạc cần tải.');
+    if(!task.payload.song_url&&!task.payload.recover_preference)throw new Error('Thiếu link bài nhạc cần tải.');
     return providerMap.flow_music(task);
   };
   if(globalThis.__LOFI_PROVIDER_TEST__){globalThis.lofiProviderTest={providerMap,formula,gotoCell};return;}
   let busy=false;
   chrome.runtime.onMessage.addListener((m,_sender,reply)=>{
+    if(m.type==='probe-music-preference'){
+      const matches=!busy&&capabilities().includes('collect_music')&&globalThis.lofiProviders.has_music_preference(m.payload);
+      reply({matches});
+      return;
+    }
     if(m.type!=='run')return;
     if(busy||!capabilities().includes(m.task.kind)){reply({ok:false,error:'Wrong or busy frame'});return;}
     busy=true;reply({ok:true});

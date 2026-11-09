@@ -5,6 +5,25 @@
   const visible = el => !!el && !!el.getClientRects().length;
   const controls = (root = document) => [...root.querySelectorAll('button,a,[role="button"],[role="menuitem"]')].filter(visible);
   const find = (pattern, root = document) => controls(root).find(el => pattern.test(name(el)));
+  const clean = text => text.replace(/\s+/g, ' ').trim();
+  const fullPromptFor = job => job.prompt + (job.instrumental
+    ? '\n\nCreate one finished instrumental lo-fi track now. No vocals, humming, speech, or lyrics. Do not ask follow-up questions.'
+    : '\n\nCreate the finished music now. Do not ask follow-up questions.');
+  const promptTurns = prompt => [...document.querySelectorAll('p,div,article')].filter(el =>
+    !el.closest('form,[contenteditable="true"]') && clean(el.innerText || '') === clean(prompt));
+
+  function preferenceChoice(prompt) {
+    for (const heading of document.querySelectorAll('h1,h2,h3,h4,[role="heading"],div,p,span,strong')) {
+      if (!visible(heading) || !/^which do you prefer\?$/i.test(clean(heading.innerText || ''))) continue;
+      if (prompt && !(prompt.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING)) continue;
+      for (let panel = heading.parentElement; panel && panel !== document.body; panel = panel.parentElement) {
+        const choices = controls(panel).filter(el => /^choose$/i.test(name(el)));
+        if (choices.length > 2) break;
+        if (choices.length === 2 && find(/^no preference$/i, panel)) return choices[0];
+      }
+    }
+    return null;
+  }
   const bridge = async (type, id, extra = {}) => {
     const response = await chrome.runtime.sendMessage({type, id, ...extra});
     if (response?.ok === false) throw new Error(response.error || 'Local tool error');
@@ -59,31 +78,46 @@
         const song = await until(() => songs().find(item => new URL(item.key).pathname.replace(/\/$/, '') === path), 60000, 'the selected song in this session');
         return await downloadSong(job, song);
       }
-      const textbox = await until(() => {
+      const textbox = job.recover_preference ? null : await until(() => {
         if (find(/^read-only session$/i)) {
           throw new Error('Session Flow Music chỉ đọc. Xóa link Session Flow Music trong Studio để tạo session bằng tài khoản hiện tại.');
         }
         return [...document.querySelectorAll('textarea[aria-label="Chat message"],textarea[placeholder="Describe your song..."],[contenteditable="true"][role="textbox"]')].find(visible);
       }, 60000, 'the prompt input');
       const baseline = new Set(songs().map(song => song.key));
-      const fullPrompt=job.prompt + (job.instrumental ? '\n\nCreate one finished instrumental lo-fi track now. No vocals, humming, speech, or lyrics. Do not ask follow-up questions.' : '\n\nCreate the finished music now. Do not ask follow-up questions.');
-      const clean = text => text.replace(/\s+/g, ' ').trim();
-      const promptTurns = () => [...document.querySelectorAll('p,div,article')].filter(el =>
-        !el.closest('form,[contenteditable="true"]') && clean(el.innerText || '') === clean(fullPrompt));
-      const previousTurns = new Set(globalThis.__LOFI_AUTOMATION__ ? promptTurns() : []);
-      if(globalThis.__LOFI_AUTOMATION__)await globalThis.lofi.type(job.id,textbox,fullPrompt);else fill(textbox,fullPrompt);
-      const send = await until(() => { const el = find(/^send message$/i); return el && !el.disabled && el.getAttribute('aria-disabled') !== 'true' ? el : null; }, 30000, 'the Send message button');
-      await bridge('progress', job.id, {phase: 'submitting', message: 'Đang gửi prompt một lần…', session_url: location.href});
-      if ((await bridge('state', job.id)).cancel_requested) throw new Error('Cancelled');
-      send.click(); submitted = true;
-      await bridge('progress', job.id, {phase: 'submitted', message: 'Đã gửi prompt. Đang chờ bài nhạc…', session_url: location.href});
+      const fullPrompt = fullPromptFor(job);
+      const previousTurns = new Set(promptTurns(fullPrompt));
+      if (job.recover_preference) {
+        const lastPrompt = [...previousTurns].at(-1);
+        if (!lastPrompt || !preferenceChoice(lastPrompt)) throw new Error('Không tìm thấy lựa chọn của prompt đã gửi trong tab này.');
+      } else {
+        if(globalThis.__LOFI_AUTOMATION__)await globalThis.lofi.type(job.id,textbox,fullPrompt);else fill(textbox,fullPrompt);
+        const send = await until(() => { const el = find(/^send message$/i); return el && !el.disabled && el.getAttribute('aria-disabled') !== 'true' ? el : null; }, 30000, 'the Send message button');
+        await bridge('progress', job.id, {phase: 'submitting', message: 'Đang gửi prompt một lần…', session_url: location.href});
+        if ((await bridge('state', job.id)).cancel_requested) throw new Error('Cancelled');
+        send.click(); submitted = true;
+        await bridge('progress', job.id, {phase: 'submitted', message: 'Đã gửi prompt. Đang chờ bài nhạc…', session_url: location.href});
+      }
       let song;
+      let choseFirst = false;
       const end = Date.now() + job.timeout * 1000;
       while (Date.now() < end) {
         if ((await bridge('state', job.id)).cancel_requested) throw new Error('Cancelled. A submitted song may still finish on Flow Music.');
         // History can load after the composer. Even a previously unseen card
         // belongs to an older take if it precedes the submitted prompt.
-        const prompt = globalThis.__LOFI_AUTOMATION__ && promptTurns().filter(el => !previousTurns.has(el)).at(-1);
+        const prompt = promptTurns(fullPrompt).filter(el => job.recover_preference || !previousTurns.has(el)).at(-1);
+        const choice = (prompt || !globalThis.__LOFI_AUTOMATION__) && preferenceChoice(prompt);
+        if (choice) {
+          if (!choseFirst && !choice.disabled && choice.getAttribute('aria-disabled') !== 'true') {
+            await bridge('progress', job.id, {phase:'submitted', message:'Flow Music: chọn phiên bản đầu tiên', session_url:location.href});
+            if (choice.isConnected && visible(choice) && !choice.disabled) {
+              choice.click();
+              choseFirst = true;
+            }
+          }
+          await pause(1000);
+          continue;
+        }
         song = songs().find(item => !baseline.has(item.key) && (!globalThis.__LOFI_AUTOMATION__ ||
           (prompt && (prompt.compareDocumentPosition(item.card) & Node.DOCUMENT_POSITION_FOLLOWING))));
         if (song) break;
@@ -159,7 +193,14 @@
     await bridge('finish-download', job.id);
     return {ok: true};
   }
-  if (globalThis.__LOFI_AUTOMATION__) { globalThis.lofiProviders.flow_music = async task => run({...task.payload,id:task.id}); return; }
+  if (globalThis.__LOFI_AUTOMATION__) {
+    globalThis.lofiProviders.flow_music = async task => run({...task.payload,id:task.id});
+    globalThis.lofiProviders.has_music_preference = payload => {
+      const prompt = promptTurns(fullPromptFor(payload)).at(-1);
+      return Boolean(prompt && preferenceChoice(prompt));
+    };
+    return;
+  }
   if (globalThis.__LOFI_FLOW_MUSIC_TEST__) { globalThis.lofiMusicTest = {songs, run, fill}; return; }
   let busy = false;
   chrome.runtime.onMessage.addListener((message, _sender, reply) => {
