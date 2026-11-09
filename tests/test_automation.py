@@ -13,7 +13,7 @@ import pytest
 from automation_engine import Engine
 from automation_bridge import create_app, direct_workbook_download, matches_reference
 from automation_telegram import Telegram
-from automation_workbook import queue_records
+from automation_workbook import queue_records, mark_completed, read_sheets
 
 
 @pytest.fixture
@@ -63,14 +63,33 @@ def test_music_downloads_25_tracks_in_same_session_before_render(engine,monkeypa
     rendered=[]
     monkeypatch.setattr(e,'start_render',lambda:rendered.append(True))
     e.enqueue_music()
+    session='https://www.flowmusic.app/session/12345678-aaaa-bbbb-cccc-123456789abc'
     for index in range(25):
         task=e.task(e.state['task_id'])
-        assert task['payload']['url']==e.settings.music_session_url
+        assert task['payload']['url']==(session if index else 'https://www.flowmusic.app/session?t=true')
         assert task['payload']['prompt']=='Warm instrumental lofi'
         assert not rendered
-        finish(e,{'path':str(tmp_path/f'track{index}.mp3')})
+        e.claim(task['id'],'main')
+        e.progress(task['id'],'main','downloading',True,session)
+        e.complete_task(task['id'],'main',{'path':str(tmp_path/f'track{index}.mp3')})
     assert len(e.state['artifacts']['music'])==25
     assert rendered==[True]
+
+
+def test_resume_renders_when_reduced_music_count_is_already_met(engine,monkeypatch):
+    engine.configure({'music_count':3})
+    engine.state.update(record={'music_prompt':'Warm piano'},music_index=1,
+                        artifacts={'music':['first.mp3']})
+    engine.enqueue_music()
+    pending_id=engine.state['task_id']
+    engine.pause()
+    engine.configure({'music_count':1})
+    rendered=Mock()
+    monkeypatch.setattr(engine,'start_render',rendered)
+    engine.resume()
+    rendered.assert_called_once_with()
+    assert engine.state['task_id']==pending_id
+    assert engine.next_task('main') is None
 
 
 def test_music_resume_collects_exact_song_without_sending_prompt(engine,monkeypatch):
@@ -117,6 +136,64 @@ def test_workbook_preserves_file_and_reads_native_boolean(workbook):
     assert workbook.read_bytes()==before
 
 
+def test_local_checkbox_preserves_package_and_is_idempotent(workbook, tmp_path):
+    before=workbook.read_bytes()
+    backup=tmp_path/'backup.xlsx'
+    mark_completed(workbook,'Kich_ban','LOFI-001','A8','I8',backup)
+    assert backup.read_bytes()==before
+    assert read_sheets(workbook)['Kich_ban'][8]['I'] is True
+    assert [row['id'] for row in queue_records(workbook)]==['LOFI-002']
+    with ZipFile(io.BytesIO(before)) as old, ZipFile(workbook) as new:
+        changed=[name for name in old.namelist() if old.read(name)!=new.read(name)]
+        assert changed==['xl/worksheets/sheet1.xml']
+        assert new.read(changed[0])==old.read(changed[0]).replace(
+            b'<c r="I8" t="b"><v>0</v></c>', b'<c r="I8" t="b"><v>1</v></c>')
+    after=workbook.read_bytes()
+    mark_completed(workbook,'Kich_ban','LOFI-001','A8','I8',backup)
+    assert workbook.read_bytes()==after and backup.read_bytes()==before
+    with pytest.raises(ValueError,match='row ID'):
+        mark_completed(workbook,'Kich_ban','LOFI-002','A8','I8',backup)
+    assert workbook.read_bytes()==after
+
+
+def test_local_workbook_flow_and_retry_after_excel_lock(engine, workbook, tmp_path, monkeypatch):
+    engine.configure({'excel_path':str(workbook),'excel_url':''})
+    engine.start(local_review=True)
+    assert engine.task(engine.state['task_id'])['role']=='local'
+    assert engine.next_task('main') is None
+    engine.process_local_task()
+    assert engine.state['record']['id']=='LOFI-001'
+    assert engine.task(engine.state['task_id'])['kind']=='generate_image'
+    finish(engine,{'path':str(tmp_path/'image.png')})
+    finish(engine,{'url':'https://flow.google.com/project/12345678-aaaa-bbbb-cccc-123456789abc'})
+    finish(engine,{'path':str(tmp_path/'video.mp4')})
+    output=tmp_path/'mix.mp4'
+    output.write_bytes(b'completed media fixture')
+    def render():
+        engine.state.update(status='rendering',output=str(output),render_dir=str(tmp_path/'render'))
+    monkeypatch.setattr(engine,'start_render',render)
+    finish(engine,{'path':str(tmp_path/'music.mp3')})
+    engine.worker=Mock()
+    engine.worker.poll.return_value=0
+    engine.worker.returncode=0
+    engine.worker_log=io.BytesIO()
+    monkeypatch.setattr('studio_pipeline.read_state',lambda folder:{'status':'done'})
+    engine.tick_render()
+    assert engine.task(engine.state['task_id'])['role']=='local'
+    lock=workbook.with_name('~$'+workbook.name)
+    lock.touch()
+    engine.process_local_task()
+    assert engine.state['status']=='failed'
+    assert read_sheets(workbook)['Kich_ban'][8]['I'] is False
+    lock.unlink()
+    # Changing the configured path cannot redirect a pending completion write.
+    engine.configure({'excel_path':str(tmp_path/'different.xlsx')})
+    engine.resume()
+    engine.process_local_task()
+    assert engine.state['status']=='complete'
+    assert read_sheets(workbook)['Kich_ban'][8]['I'] is True
+
+
 def test_direct_excel_download_accepts_only_fresh_named_workbook(tmp_path,monkeypatch):
     from automation_engine import now
     monkeypatch.setattr('flow_music_browser.download_directory',lambda profile:tmp_path)
@@ -143,6 +220,37 @@ def test_resized_reference_cannot_become_generated_asset(tmp_path):
     assert not matches_reference(cv2.flip(original,0),[str(ref)])
 
 
+def test_cleanup_runs_after_tick_and_keeps_final_mix_and_unrelated_files(engine, tmp_path):
+    engine.state.update(run_id='a'*12, record={'id':'LOFI-001'})
+    scene=engine.scenario_dir()
+    prepared=scene/'media-cache'/'prepared'/'clip.mp4'
+    prepared.parent.mkdir(parents=True)
+    prepared.write_bytes(b'prepared')
+    export=tmp_path/f'LOFI-001_{engine.state["run_id"]}'
+    export.mkdir()
+    mix=export/'mix.mp4'
+    unrelated=export/'notes.txt'
+    unrelated.write_text('keep this')
+    task=engine.enqueue('flow_video',{'url':'https://flow.google.com/'})
+    asset=engine.home/'assets'/task['id']/'asset.mp4'
+    download=tmp_path/'LoFiAutomation'/task['id']/asset.name
+    for path in (asset,download,export/'video.mp4'):
+        path.parent.mkdir(parents=True,exist_ok=True)
+        path.write_bytes(b'generated video')
+    task['download_source']=str(download)
+    engine.put_task(task)
+    engine.state.update(artifacts={'video':str(asset)},output=str(mix))
+    engine.enqueue('excel_tick',{})
+    assert asset.is_file() and download.is_file()
+    finish(engine,{'checked':True})
+    assert engine.state['cleanup_pending'] and asset.is_file()
+    mix.write_bytes(b'final video')
+    engine.cleanup_materials()
+    assert not engine.state.get('cleanup_pending')
+    assert not asset.exists() and not download.exists() and not prepared.exists()
+    assert set(export.iterdir())=={mix,unrelated}
+
+
 def test_full_scenario_stops_until_correct_telegram_approval(engine,workbook,tmp_path,monkeypatch):
     e=engine;e.start()
     finish(e,{'path':str(workbook)})
@@ -150,7 +258,11 @@ def test_full_scenario_stops_until_correct_telegram_approval(engine,workbook,tmp
     assert image['role']=='gpt' and image['kind']=='generate_image'
     assert 'prompt2' not in image['payload']
     finish(e,{'path':str(tmp_path/'image.png')})
+    assert e.task(e.state['task_id'])['kind']=='flow_project'
+    project='https://flow.google.com/project/12345678-aaaa-bbbb-cccc-123456789abc'
+    finish(e,{'url':project})
     video=e.task(e.state['task_id'])
+    assert video['payload']['url']==project
     assert video['payload']['count']==1 and video['payload']['duration']==10
     assert video['payload']['model']=='Omni 1.1 Flash'
     finish(e,{'path':str(tmp_path/'native.mp4')})
@@ -173,6 +285,28 @@ def test_full_scenario_stops_until_correct_telegram_approval(engine,workbook,tmp
     assert e.state['status']=='complete'
     assert e.next_task('main') is None and e.next_task('gpt') is None
     assert e.state['completed']==['LOFI-001']
+
+
+def test_flow_retry_reuses_created_project_and_migrates_unsubmitted_old_task(engine):
+    e=engine
+    e.state.update(record={'id':'LOFI-001','title':'Shop','animation_prompt':'Animate'},artifacts={'image':'new.png'})
+    old=e.enqueue('flow_video',{'url':e.settings.flow_url})
+    e.claim(old['id'],'main')
+    e.fail_task(old['id'],'main','Project not found')
+    e.resume()
+    project=e.task(e.state['task_id'])
+    assert project['kind']=='flow_project'
+    e.claim(project['id'],'main')
+    url='https://flow.google.com/project/12345678-aaaa-bbbb-cccc-123456789abc'
+    e.progress(project['id'],'main','created',True,url)
+    e.fail_task(project['id'],'main','connection lost before result')
+    e.resume()
+    video=e.task(e.state['task_id'])
+    assert video['kind']=='flow_video' and video['payload']['url']==url
+    e.claim(video['id'],'main')
+    e.fail_task(video['id'],'main','settings failed')
+    e.resume()
+    assert e.task(e.state['task_id'])['payload']['url']==url
 
 
 def test_restart_does_not_requeue_submitted_generations(engine,workbook):

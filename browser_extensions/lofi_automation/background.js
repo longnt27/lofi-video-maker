@@ -112,7 +112,7 @@ chrome.runtime.onMessage.addListener((m,sender,reply)=>{
     if(!active){const saved=await chrome.storage.session.get('active');active=saved.active||null;}
     if(!active||m.id!==active.id||sender.tab?.id!==active.tab)throw new Error('Not the active task tab');
     if(m.type==='state')return api('state',{id:m.id});
-    if(m.type==='progress')return api('progress',{id:m.id,message:m.message||m.phase,submitted:m.submitted||['submitting','submitted','downloading'].includes(m.phase),session_url:active.kind.startsWith('excel')?active.url:sender.url,song_url:m.song_url});
+    if(m.type==='progress')return api('progress',{id:m.id,message:m.message||m.phase,submitted:m.submitted||['submitting','submitted','downloading'].includes(m.phase),session_url:active.kind.startsWith('excel')?active.url:(m.session_url||sender.url),song_url:m.song_url});
     if(m.type==='image-file')return api('image-file',{id:m.id,image:m.image});
     if(m.type==='assets')return api('assets/'+m.id);
     if(m.type==='download-workbook'){

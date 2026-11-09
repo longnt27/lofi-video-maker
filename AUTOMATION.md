@@ -10,6 +10,24 @@ Open <http://127.0.0.1:7860> and select **Tự động hóa**. Studio starts its
 authenticated loopback browser bridge on port 7861. Use `--no-automation` for
 the existing video-processing UI alone. No new Python dependencies are required.
 
+## Local Excel workbook
+
+Enter the workbook's full `.xlsx` path in **File Excel trên máy**.
+Studio reads a fresh snapshot at the start of each scenario and writes the
+completion checkbox directly to that same local file after rendering succeeds.
+With a local path configured, both Excel steps run inside Studio.
+The main Chrome profile is used for Google Flow and Flow Music.
+
+The writer verifies the script ID in column A before changing column I.
+It preserves the workbook's other ZIP contents, formatting and native checkbox
+metadata, and stores the original under `cache/automation/assets/<task-id>/before.xlsx`
+before replacing the file atomically. Close the workbook in Excel before the
+completion step. If it is locked or its row ID changed, Studio stops and offers
+the usual resume action.
+
+The workbook source is pinned for each run. A new path applies to the next new
+run. Leaving the path empty uses the existing Excel web workflow described below.
+
 ## One-time setup
 
 - Install the generated `cache/automation/extensions/main` extension into the
@@ -20,7 +38,9 @@ the existing video-processing UI alone. No new Python dependencies are required.
   generated folder. Use the generated folders, not source templates; their
   configuration and private role keys are generated locally and ignored by Git.
 - Keep both profiles open and signed in. Extension heartbeats show their connection.
-- Configure the Excel workbook and Google Flow project URLs. The ChatGPT project
+- Configure the Excel workbook and ChatGPT project URL. Google Flow creates a
+  new project for each scenario in the selected main Chrome profile.
+  The ChatGPT project
   URL creates each scenario's image conversation inside that project. Its
   instructions/style.md stay in project context; the approved local reference
   images are also attached to the first image request. A local style.md is optional
@@ -40,7 +60,8 @@ the existing video-processing UI alone. No new Python dependencies are required.
    unchecked, non-skipped `LOFI-*` ID. The XLSX reader never rewrites the workbook.
 3. Open a fresh conversation in the configured ChatGPT project. Attach the style
    images and optional local style.md, send the first image prompt, and transfer the resulting image to Studio.
-4. Upload that image to the configured Google Flow project. Select the configured
+4. Create a new Google Flow project and save its URL for this scenario. Upload
+   the image there. Retries reuse the saved project. Select the configured
    Omni 1.1 Flash model, Video/Ingredients, 16:9, 720p, x1 and 10 seconds. If a required option is absent,
    stop rather than silently substituting another model. Download Original size.
 5. Create the configured number of Flow Music tracks from the workbook prompt
@@ -48,7 +69,8 @@ the existing video-processing UI alone. No new Python dependencies are required.
    opening the download menu so a retry can download that same take.
 6. Run the existing `studio_pipeline.py`: LaMa → tiled Fallin → seamless loop →
    playlist mix, with source ambience at 10% by default. Only the final mix goes
-   to the output folder; assets, logs and preview are under `cache/automation`.
+   to the output folder. Studio keeps the source media and render cache until
+   the final mix is saved and the Excel checkbox is verified.
 7. Reopen the cloud workbook, select the script sheet, verify the ID in column A,
    and check the corresponding column-I native checkbox only if currently FALSE.
    Verify TRUE and the saved state before reporting completion.
@@ -77,7 +99,8 @@ installation has a separate persistent identifier in that Chrome profile.
    Open the extension popup, give it a recognizable name and click **Dùng profile này**.
    Alternatively choose its installation in Studio and activate it there.
 4. Sign in to the needed services in the new profile. Make sure it can access
-   the configured ChatGPT/Flow projects and Excel link; update project URLs if needed.
+   the configured ChatGPT project and the generation services. Update the ChatGPT
+   project URL if needed. Each scenario creates its own Flow project.
    Continue the paused step, or approve the pending result on Telegram as normal.
 
 Only the selected installation for each role receives/claims tasks. An old profile
@@ -117,10 +140,10 @@ take in the original session, copy its song link, and paste it under **Khôi ph�
 khi lỗi dịch vụ** before continuing. Reload the installed main extension on
 Chrome's extensions page after updating the bridge and extension code.
 
-Original Chrome downloads remain in `Downloads/LoFiAutomation/<task-id>` and
-existing caches/files are not deleted. The existing personal Chrome profiles and
-their normal cache locations are not moved. Missing login, quota, unsupported model
-or changed page controls stops the current scenario for inspection.
+After verifying the Excel checkbox, Studio removes the scenario's downloaded
+images, clips, tracks and temporary render media. The output folder contains
+`mix.mp4`. Studio retries cleanup if a file is open and keeps the scenario
+materials available while a failed run can still be resumed.
 
 ## Validation status
 

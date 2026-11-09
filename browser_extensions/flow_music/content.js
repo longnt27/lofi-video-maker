@@ -59,7 +59,12 @@
         const song = await until(() => songs().find(item => new URL(item.key).pathname.replace(/\/$/, '') === path), 60000, 'the selected song in this session');
         return await downloadSong(job, song);
       }
-      const textbox = await until(() => [...document.querySelectorAll('textarea[aria-label="Chat message"],textarea[placeholder="Describe your song..."],[contenteditable="true"][role="textbox"]')].find(visible));
+      const textbox = await until(() => {
+        if (find(/^read-only session$/i)) {
+          throw new Error('Session Flow Music chỉ đọc. Xóa link Session Flow Music trong Studio để tạo session bằng tài khoản hiện tại.');
+        }
+        return [...document.querySelectorAll('textarea[aria-label="Chat message"],textarea[placeholder="Describe your song..."],[contenteditable="true"][role="textbox"]')].find(visible);
+      }, 60000, 'the prompt input');
       const baseline = new Set(songs().map(song => song.key));
       const fullPrompt=job.prompt + (job.instrumental ? '\n\nCreate one finished instrumental lo-fi track now. No vocals, humming, speech, or lyrics. Do not ask follow-up questions.' : '\n\nCreate the finished music now. Do not ask follow-up questions.');
       const clean = text => text.replace(/\s+/g, ' ').trim();
@@ -67,7 +72,7 @@
         !el.closest('form,[contenteditable="true"]') && clean(el.innerText || '') === clean(fullPrompt));
       const previousTurns = new Set(globalThis.__LOFI_AUTOMATION__ ? promptTurns() : []);
       if(globalThis.__LOFI_AUTOMATION__)await globalThis.lofi.type(job.id,textbox,fullPrompt);else fill(textbox,fullPrompt);
-      const send = await until(() => { const el = find(/^send message$/i); return el && !el.disabled && el.getAttribute('aria-disabled') !== 'true' ? el : null; });
+      const send = await until(() => { const el = find(/^send message$/i); return el && !el.disabled && el.getAttribute('aria-disabled') !== 'true' ? el : null; }, 30000, 'the Send message button');
       await bridge('progress', job.id, {phase: 'submitting', message: 'Đang gửi prompt một lần…', session_url: location.href});
       if ((await bridge('state', job.id)).cancel_requested) throw new Error('Cancelled');
       send.click(); submitted = true;

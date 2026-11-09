@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from filecmp import cmp
 import json
 import math
 import os
@@ -18,8 +19,13 @@ import uuid
 from pydantic import BaseModel, Field
 
 from automation_telegram import Telegram
-from automation_workbook import queue_records
+from automation_workbook import queue_records, mark_completed, read_sheets
 from flow_music_browser import ROOT
+
+
+FLOW_PROJECT_URL = re.compile(r'https://flow\.google\.com/project/[0-9a-fA-F-]{36}/?')
+MUSIC_SESSION_URL = re.compile(r'https://www[.]flowmusic[.]app/session/[0-9a-fA-F-]{36}/?')
+NEW_MUSIC_SESSION = 'https://www.flowmusic.app/session?t=true'
 
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -34,6 +40,7 @@ def atomic(path, value):
 
 class Settings(BaseModel):
     excel_url: str = ''
+    excel_path: str = ''
     main_profile: str = 'Profile 20'
     gpt_profile: str = 'Profile 52'
     gpt_project_url: str = ''
@@ -42,7 +49,7 @@ class Settings(BaseModel):
     references: list[str] = Field(default_factory=list)
     style_path: str = ''
     output_dir: str = str(ROOT / 'data/outputs')
-    music_session_url: str = 'https://www.flowmusic.app/session/410a8eab-47fa-4891-bdd7-d3dde6fea56b'
+    music_session_url: str = ''
     music_count: int = Field(default=3, ge=1, le=30)
     remove_watermark: bool = True
     watermark_box: list[float] | None = None  # Normalized x,y,width,height, explicitly calibrated.
@@ -106,10 +113,16 @@ class Engine:
             if task['role']==role and task['status'] in ('queued','running'):
                 raise ValueError(f'Profile {role} đang xử lý một bước. Chờ bước xong hoặc bấm Dừng trước khi chuyển.')
 
-    def preflight(self, local_review=False):
+    def preflight(self, local_review=False, source=None):
         c = self.settings
-        if urlparse(c.excel_url).hostname != 'cmcuni-my.sharepoint.com': raise ValueError('Cần link Excel thuộc cmcuni-my.sharepoint.com')
-        if not re.fullmatch(r'https://flow\.google\.com/project/[0-9a-fA-F-]{36}/?', c.flow_url): raise ValueError('Cần URL project Google Flow')
+        source = source or self.excel_source()
+        if source.get('path'):
+            path = Path(source['path'])
+            if path.suffix.lower() != '.xlsx' or not path.is_file():
+                raise ValueError('Cần đường dẫn tới file Excel .xlsx trên máy')
+            queue_records(path)
+        elif urlparse(source.get('url','')).hostname != 'cmcuni-my.sharepoint.com':
+            raise ValueError('Cần file Excel trên máy hoặc link Excel thuộc cmcuni-my.sharepoint.com')
         if not 1 <= len(c.references) <= 5 or any(not Path(p).is_file() for p in c.references): raise ValueError('Chọn 1–5 ảnh style đã duyệt trên máy')
         if c.gpt_project_url and not re.fullmatch(r'https://chatgpt\.com/g/g-p-[a-zA-Z0-9-]+/project/?',c.gpt_project_url): raise ValueError('URL project ChatGPT không hợp lệ')
         if not c.gpt_project_url and (not c.style_path or not Path(c.style_path).is_file()): raise ValueError('Chọn project ChatGPT chứa style.md hoặc file style.md trên máy')
@@ -117,7 +130,7 @@ class Engine:
             b = c.watermark_box
             if not b or len(b) != 4 or not all(math.isfinite(n) for n in b) or min(b[:2]) < 0 or min(b[2:]) <= 0 or b[0]+b[2] > 1 or b[1]+b[3] > 1 or b[2]*b[3] > .25:
                 raise ValueError('Cần khoanh watermark một lần và lưu tọa độ chuẩn hóa x,y,w,h; không tự đoán vùng xóa')
-        if not re.fullmatch(r'https://www[.]flowmusic[.]app/session/[0-9a-fA-F-]{36}/?',c.music_session_url):
+        if c.music_session_url and not MUSIC_SESSION_URL.fullmatch(c.music_session_url):
             raise ValueError('Cần link session Flow Music hợp lệ.')
         if c.variant not in ('soft','strong') or c.device not in ('auto','cpu','cuda'): raise ValueError('Sai cấu hình upscale')
         if c.preview_seconds is not None and c.preview_seconds < 1: raise ValueError('Thời lượng xem thử phải dương')
@@ -144,6 +157,10 @@ class Engine:
 
     def put_task(self, task): atomic(self.tasks_dir/(task['id']+'.json'), task)
 
+    def excel_source(self):
+        path = self.settings.excel_path.strip().strip('"')
+        return {'path': str(Path(path).expanduser().resolve())} if path else {'url': self.settings.excel_url}
+
     def enqueue(self, kind, payload):
         if kind == 'image_pair':
             kind = 'generate_image'
@@ -158,12 +175,50 @@ class Engine:
                 raise ValueError('Link hội thoại ChatGPT không hợp lệ.')
             payload = {**payload, 'url': 'https://chatgpt.com/c/' + match[1]}
         role = 'gpt' if kind in ('generate_image','collect_image') else 'main'
+        if kind in ('excel_snapshot', 'excel_tick'):
+            source = self.state.setdefault('excel_source', self.excel_source())
+            payload = {k:v for k,v in payload.items() if k not in ('url','path')}
+            payload.update(source)
+            if source.get('path'):
+                role = 'local'
         task = {'id': uuid.uuid4().hex, 'kind': kind, 'role': role, 'status': 'queued',
                 'payload': payload, 'created_at': now(), 'submitted': False, 'session_url': ''}
         self.put_task(task)
         self.state.update(task_id=task['id'], status='running', stage=kind, message='Đang đợi '+kind)
         self.save()
         return task
+
+    def process_local_task(self):
+        with self.lock:
+            if self.state['status'] != 'running' or not self.state.get('task_id'):
+                return
+            task = self.task(self.state['task_id'])
+            if task['role'] != 'local' or task['status'] != 'queued':
+                return
+            self.claim(task['id'], 'local')
+            folder = self.home/'assets'/task['id']
+            payload = task['payload']
+            try:
+                if task['kind'] == 'excel_snapshot':
+                    folder.mkdir(parents=True, exist_ok=True)
+                    snapshot = folder/'asset.xlsx'
+                    shutil.copyfile(payload['path'], snapshot)
+                    queue_records(snapshot)
+                    result = {'path':str(snapshot)}
+                else:
+                    output = self.state.get('output')
+                    if not output or not Path(output).is_file():
+                        raise ValueError('Chưa có video hoàn tất để đánh dấu Excel')
+                    mark_completed(Path(payload['path']), payload['sheet'], payload['id'],
+                                   payload['id_cell'], payload['cell'], folder/'before.xlsx')
+                    result = {'checked':True}
+                self.complete_task(task['id'], 'local', result)
+            except Exception as exc:
+                current = self.task(task['id'])
+                if current['status'] == 'running':
+                    self.fail_task(task['id'], 'local', str(exc))
+                else:
+                    self.fail(str(exc))
 
     def next_task(self, role):
         with self.lock:
@@ -204,6 +259,9 @@ class Engine:
 
     def start(self, local_review=False, restart_failed=False):
         with self.lock:
+            self.cleanup_materials()
+            if self.state.get('cleanup_pending'):
+                raise ValueError('Đang dọn nguyên liệu của kịch bản vừa xong. Đóng các file đang mở rồi thử lại.')
             restart=restart_failed and self.state['status'] in ('failed','interrupted','paused')
             if not restart and self.state['status'] not in ('idle','complete'): raise ValueError('Quy trình đang chạy hoặc đang chờ duyệt; không tạo phiên mới')
             self.preflight(local_review)
@@ -219,6 +277,8 @@ class Engine:
                 raise ValueError('Result does not belong to the active task')
             if task['kind']=='excel_tick' and result.get('checked') is not True:
                 raise ValueError('Excel checkbox change was not verified')
+            if task['kind']=='flow_project':
+                self.validate_flow_project(result.get('url',''))
             task.update(status='done', result=result)
             self.put_task(task)
             kind = task['kind']
@@ -229,6 +289,8 @@ class Engine:
                     self.state.update(status='complete', message='Không còn kịch bản chưa tick.'); self.save(); return
                 record = records[0]
                 self.state.update(record=record, artifacts={}, music_index=0)
+                self.state.pop('flow_project_url',None)
+                self.state.pop('music_session_url',None)
                 self.scenario_dir().mkdir(parents=True, exist_ok=True)
                 atomic(self.scenario_dir()/'youtube.json', record['youtube'])
                 self.enqueue('generate_image', {'url':self.settings.gpt_project_url or 'https://chatgpt.com/', 'prompt1':record['image_prompt_1'],
@@ -236,12 +298,16 @@ class Engine:
                     'assets':self.settings.references+([self.settings.style_path] if self.settings.style_path else []), 'timeout':900})
             elif kind in ('generate_image','collect_image'):
                 self.state['artifacts']['image'] = result['path']
-                self.enqueue('flow_video', {'url':self.settings.flow_url, 'model':self.settings.flow_model,
-                    'duration':10, 'count':1, 'image':result['path'], 'prompt':self.state['record']['animation_prompt'], 'timeout':1200})
+                self.enqueue_flow_video()
+            elif kind == 'flow_project':
+                self.state['flow_project_url'] = result['url'].rstrip('/')
+                self.enqueue_flow_video()
             elif kind in ('flow_video','collect_video'):
                 self.state['artifacts']['video'] = result['path']
                 self.enqueue_music()
             elif kind in ('flow_music','collect_music'):
+                if MUSIC_SESSION_URL.fullmatch(task.get('session_url','')):
+                    self.state['music_session_url']=task['session_url']
                 self.state['artifacts'].setdefault('music',[]).append(result['path'])
                 self.state['music_index'] += 1
                 if self.state['music_index'] < self.settings.music_count: self.enqueue_music()
@@ -250,16 +316,110 @@ class Engine:
                 if result.get('checked') is not True: raise ValueError('Excel checkbox change was not verified')
                 if self.state.get('record'):
                     self.state.setdefault('completed', []).append(self.state['record']['id'])
-                self.state.update(status='complete', stage='complete', message='Đã tick Excel và hoàn tất kịch bản.')
+                self.state.update(status='complete', stage='complete', cleanup_pending=True,
+                                  message='Đã tick Excel. Đang dọn nguyên liệu của kịch bản.')
                 self.save()
+                self.cleanup_materials()
+
+    @staticmethod
+    def validate_flow_project(url):
+        if not isinstance(url,str) or not FLOW_PROJECT_URL.fullmatch(url):
+            raise ValueError('Flow chưa trả về URL project hợp lệ.')
+        return url.rstrip('/')
+
+    def enqueue_flow_video(self):
+        url=self.state.get('flow_project_url')
+        if not url:
+            return self.enqueue('flow_project', {'url':'https://flow.google.com/', 'timeout':120,
+                'title':self.state['record']['id']+' · '+self.state['record']['title']})
+        self.validate_flow_project(url)
+        return self.enqueue('flow_video', {'url':url, 'model':self.settings.flow_model,
+            'duration':10, 'count':1, 'image':self.state['artifacts']['image'],
+            'prompt':self.state['record']['animation_prompt'], 'timeout':1200})
 
     def enqueue_music(self):
         r = self.state['record']
-        self.enqueue('flow_music', {'url':self.settings.music_session_url,
+        self.enqueue('flow_music', {'url':self.state.get('music_session_url') or self.settings.music_session_url or NEW_MUSIC_SESSION,
             'prompt':r['music_prompt'],
             'instrumental':True, 'format':'mp3', 'timeout':900})
 
     def scenario_dir(self): return self.home/'runs'/self.state['run_id']/self.state['record']['id']
+
+    def cleanup_materials(self):
+        with self.lock:
+            if self.state['status'] != 'complete' or not self.state.get('cleanup_pending'):
+                return
+            try:
+                self.remove_scenario_materials()
+            except (OSError, ValueError) as exc:
+                message = f'Đã tick Excel. Chưa dọn hết nguyên liệu: {exc}'
+                if self.state.get('message') != message:
+                    self.state['message'] = message
+                    self.save()
+                return
+            self.state.pop('cleanup_pending', None)
+            self.state['artifacts'] = {}
+            self.state['message'] = 'Đã tick Excel, dọn nguyên liệu và lưu bản mix cuối.'
+            self.save()
+
+    def remove_scenario_materials(self):
+        from flow_music_browser import download_directory
+
+        saved_output = self.state.get('output')
+        output = Path(saved_output).resolve() if saved_output else None
+        if output is None or not output.is_file() or output.stat().st_size == 0:
+            raise ValueError('Không tìm thấy bản mix cuối để giữ lại.')
+        scene = self.scenario_dir()
+        runs = (self.home/'runs').resolve()
+        expected_scene = runs/self.state['run_id']/self.state['record']['id']
+        if expected_scene.parent.parent != runs or scene.resolve() != expected_scene:
+            raise ValueError('Thư mục kịch bản nằm ngoài cache Studio.')
+        assets = (self.home/'assets').resolve()
+        files = self.state.get('artifacts', {})
+        material = [(value, key) for key in ('image','video') if (value := files.get(key))]
+        material.extend((value, f'music/{index:02d}') for index, value in enumerate(files.get('music', []), 1))
+        export = output.parent
+        is_export = export.name == f'{self.state["record"]["id"]}_{self.state["run_id"]}'
+        for value, export_name in material:
+            path = Path(value)
+            task_id = path.parent.name
+            if not re.fullmatch(r'[0-9a-f]{32}',task_id) or path.stem != 'asset':
+                continue
+            if path.resolve() != assets/task_id/path.name or path.resolve() == output or not path.is_file():
+                continue
+            # Older runs copied these files into the output folder. Match the
+            # contents before removing a copy at a name the user can edit.
+            if is_export:
+                copy = export/(export_name+path.suffix)
+                if copy.is_file() and copy.resolve() == copy and copy != output and cmp(copy, path, shallow=False):
+                    copy.unlink()
+            task = self.task(task_id) if (self.tasks_dir/(task_id+'.json')).is_file() else {}
+            source = task.get('download_source')
+            profile = self.settings.gpt_profile if task.get('role') == 'gpt' else self.settings.main_profile
+            download = Path(source) if source else download_directory(profile)/'LoFiAutomation'/task_id/path.name
+            if (download.is_file() and download.parent.name == task_id and download.parent.parent.name == 'LoFiAutomation'
+                    and download.resolve() == download and download != output and cmp(download,path,shallow=False)):
+                download.unlink()
+                if not any(download.parent.iterdir()):
+                    download.parent.rmdir()
+            path.unlink()
+            if not any(path.parent.iterdir()):
+                path.parent.rmdir()
+
+        if is_export:
+            copy = export/'youtube.json'
+            metadata = scene/'youtube.json'
+            if metadata.is_file() and copy.is_file() and copy.resolve() == copy and cmp(copy,metadata,shallow=False):
+                copy.unlink()
+            playlist = export/'music'
+            if playlist.is_dir() and playlist.resolve() == playlist and not any(playlist.iterdir()):
+                playlist.rmdir()
+
+        folders = [scene/'music', scene/'media-cache', *(scene/'render').glob('*/scratch')]
+        for folder in folders:
+            expected = expected_scene/folder.relative_to(scene)
+            if folder.is_dir() and folder.resolve() == expected and not output.is_relative_to(expected):
+                shutil.rmtree(folder)
 
     def start_render(self):
         from fallin_preprocess import media_info
@@ -267,12 +427,7 @@ class Engine:
         scene = self.scenario_dir()
         export=Path(c.output_dir)/f'{self.state["record"]["id"]}_{self.state["run_id"]}'
         export.mkdir(parents=True,exist_ok=True)
-        for key in ('image','video'):
-            if a.get(key):
-                source=Path(a[key]); target=export/(key+source.suffix)
-                if not target.exists(): shutil.copy2(source,target)
-        if (scene/'youtube.json').exists(): shutil.copy2(scene/'youtube.json',export/'youtube.json')
-        music = export/'music'; music.mkdir(exist_ok=True)
+        music = scene/'music'; music.mkdir(parents=True,exist_ok=True)
         for index,path in enumerate(a['music']):
             dest = music/f'{index+1:02d}{Path(path).suffix}'
             if not dest.exists(): shutil.copy2(path,dest)
@@ -290,7 +445,8 @@ class Engine:
             self.enqueue('excel_tick',{'url':c.excel_url,'sheet':record['sheet'],'id':record['id'],
                 'id_cell':f'A{record["row"]}','cell':record['checkbox_cell']}); return
         folder = scene/'render'/uuid.uuid4().hex[:10]; folder.mkdir(parents=True)
-        config = dict(kind='mix', home=str(ROOT/'cache/studio'), job_dir=str(folder), source=a['video'],
+        config = dict(kind='mix', home=str(ROOT/'cache/studio'), media_cache=str(scene/'media-cache'),
+            job_dir=str(folder), source=a['video'],
             output=str(output), box=box, variant=c.variant, device=c.device, tile=True, edge=c.edge,
             seconds=10, grain=0, fps=None, music=str(music), recursive=False, shuffle=False, seed=42,
             crossfade=2, fade=3, seamless=True, overlap=1, dust=False, preview=c.preview_seconds,
@@ -360,14 +516,36 @@ class Engine:
     def resume(self, allow_resubmit=False, song_url=''):
         with self.lock:
             if self.state['status'] not in ('paused','failed','interrupted'): raise ValueError('Không có bước đang dừng để tiếp tục')
-            self.preflight(self.state.get('local_review', False))
+            source = self.state.get('excel_source') or self.excel_source()
+            record_id = self.state.get('record', {}).get('id')
+            if source.get('path') and record_id:
+                rows = read_sheets(Path(source['path'])).get('Kich_ban', {}).values()
+                if any(row.get('A') == record_id and str(row.get('H', '')).strip() == 'BO_QUA' for row in rows):
+                    raise ValueError(f'{record_id} đã được đánh dấu bỏ qua. Bấm Chạy lại từ Excel để lấy kịch bản tiếp theo.')
+            self.preflight(self.state.get('local_review', False), source)
             task=self.task(self.state['task_id']) if self.state.get('task_id') else None
             if self.state.get('telegram_message_id') and self.state.get('output'):
                 # Resume still requires a fresh Telegram approval, never skips the gate.
                 self.state.update(status='notifying',notification_started=False); self.save(); return
+            if task and task['kind'] in ('flow_music','collect_music') and task['status']!='done':
+                collected=len(self.state.get('artifacts',{}).get('music',[]))
+                if self.settings.music_count < collected:
+                    raise ValueError(f'Kịch bản đã tải {collected} bản nhạc. Chọn ít nhất {collected} bản để tiếp tục.')
+                if self.settings.music_count == collected:
+                    self.start_render()
+                    return
             if task and task.get('artifact') and task['status']!='done':
                 task['status']='running'; self.put_task(task); self.state['status']='running'
                 self.complete_task(task['id'],task['role'],{'path':task['artifact']}); return
+            if task and task['kind']=='flow_project':
+                url=task.get('result',{}).get('url') or task.get('session_url','')
+                if FLOW_PROJECT_URL.fullmatch(url):
+                    # The browser may have saved the URL just before Studio stopped.
+                    task['status']='running'
+                    self.put_task(task)
+                    self.state['status']='running'
+                    self.complete_task(task['id'],task['role'],{'url':url})
+                    return
             if task and task['status']!='done':
                 if task['kind'] in ('generate_image','image_pair') and task['submitted'] and not allow_resubmit and self.recover_image(task):
                     return
@@ -378,13 +556,17 @@ class Engine:
                 if task['kind']=='flow_video' and task['submitted'] and not allow_resubmit:
                     self.collect_video()
                     return
-                if task['kind'] in ('generate_image','image_pair','flow_video','flow_music') and task['submitted'] and not allow_resubmit:
+                if task['kind'] in ('generate_image','image_pair','flow_project','flow_video','flow_music') and task['submitted'] and not allow_resubmit:
                     raise ValueError('Bước này đã gửi prompt. Kiểm tra phiên trên web; chỉ cho phép gửi lại khi bạn bật xác nhận riêng.')
                 payload=dict(task['payload'])
                 if task['kind'] in ('image_pair','generate_image'):
                     payload.update(url=self.settings.gpt_project_url or 'https://chatgpt.com/',
                         assets=self.settings.references+([self.settings.style_path] if self.settings.style_path else []))
-                elif task['kind']=='flow_video':payload.update(url=self.settings.flow_url,model=self.settings.flow_model)
+                elif task['kind']=='flow_video':
+                    self.enqueue_flow_video()
+                    return
+                elif task['kind']=='flow_music':
+                    payload['url']=self.state.get('music_session_url') or self.settings.music_session_url or NEW_MUSIC_SESSION
                 self.enqueue(task['kind'],payload); return
             if self.state.get('notification_started'):
                 self.state.update(status='notifying',notification_started=False); self.save(); return
@@ -396,7 +578,10 @@ class Engine:
         with self.lock:
             if self.state['status'] not in ('paused','failed','interrupted') or self.state.get('stage') not in ('flow_video','collect_video'):
                 raise ValueError('Dừng tại bước video trước khi lấy video đã tạo.')
-            self.enqueue('collect_video',{'url':self.settings.flow_url,
+            task=self.task(self.state['task_id'])
+            url=self.state.get('flow_project_url') or task.get('session_url') or task['payload'].get('url','')
+            self.validate_flow_project(url)
+            self.enqueue('collect_video',{'url':url,
                 'prompt':self.state['record']['animation_prompt'],'timeout':1200})
 
     def continue_image(self, conversation_url):
@@ -475,8 +660,10 @@ class Engine:
     def loop(self):
         while not self.stop_event.is_set():
             try:
+                self.process_local_task()
                 self.tick_render()
                 self.notify()
+                self.cleanup_materials()
             except Exception as exc:
                 with self.lock: self.fail(str(exc))
             try:

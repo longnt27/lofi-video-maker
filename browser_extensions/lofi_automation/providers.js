@@ -104,13 +104,49 @@
     },90000);
     return transferImage(task,turn);
   }
+  async function flowProject(task){
+    const id=task.id;
+    await L.progress(id,'Flow: mở danh sách dự án để tạo project cho '+task.payload.title);
+    const dialog=L.all('[role="dialog"]').find(el=>L.visible(el)&&/tính năng mới|what.s new/i.test(el.innerText));
+    if(dialog)L.find(/^(bắt đầu|get started|got it)$/i,dialog)?.click();
+    let create;
+    try{
+      create=await L.until(()=>L.find(/^(?:add\s*|\+\s*)?(new project|create project|dự án mới|tạo dự án(?: mới)?)$/i),60000);
+    }catch{throw new Error('Flow: không tìm thấy nút tạo dự án mới. Kiểm tra đăng nhập và trang danh sách dự án.');}
+    await L.check(id);
+    await L.bridge('progress',id,{message:'Flow: tạo project mới cho '+task.payload.title,submitted:true,session_url:location.href});
+    create.click();
+    let url;
+    try{
+      url=await L.until(()=>/^\/project\/[0-9a-f-]{36}\/?$/i.test(location.pathname)&&location.origin+location.pathname,task.payload.timeout*1000);
+    }catch{throw new Error('Flow: đã bấm tạo dự án nhưng chưa nhận được link project. Kiểm tra tab này trước khi thử tạo lại.');}
+    await L.bridge('progress',id,{message:'Flow: đã tạo project mới',session_url:url});
+    return {url};
+  }
+
   async function flowVideo(task){
     const p=task.payload,id=task.id;
-    const composer=await L.until(()=>L.all('flow-base-prompt-box').find(L.visible));
+    let composer=await L.until(()=>{
+      if(location.pathname==='/404'||/không tìm thấy dự án|project not found/i.test(document.body.innerText))
+        throw new Error('Flow: tài khoản hiện tại không truy cập được project của kịch bản.');
+      return L.all('flow-base-prompt-box').find(L.visible);
+    },60000);
     const onboarding=L.find(/^got it.*onboarding/i);if(onboarding)onboarding.click();
     await L.progress(id,'Flow: mở cài đặt video');
-    const agent=L.all('button.agent-mode-chip').find(L.visible);if(agent?.getAttribute('aria-pressed')==='true')agent.click();
-    (await L.until(()=>L.find(/^(settings trigger|điều kiện kích hoạt cài đặt)$/i))).click();
+    // Fresh projects can start in the agent conversation panel.
+    // Close that panel to expose the manual video model controls.
+    if(L.find(/^(mở nhật ký phiên|open session history)$/i)){
+      const close=L.find(/^(đóng|close)$/i);
+      if(close)close.click();
+      composer=await L.until(()=>L.all('flow-base-prompt-box').find(L.visible));
+    }
+    const settingsTrigger=()=>L.find(/^(settings trigger|điều kiện kích hoạt cài đặt)$/i);
+    const mode=await L.until(()=>settingsTrigger()||L.find(/^(tác nhân|agent)$/i));
+    if(!settingsTrigger())mode.click();
+    let settings;
+    try{settings=await L.until(settingsTrigger);}
+    catch{throw new Error('Flow: project đã mở nhưng chưa thấy cài đặt tạo video thủ công.');}
+    settings.click();
     for(const [label,pattern] of [
       ['Video',/^(videocam\s*)?video$/i],
       ['Thành phần',/^(chrome_extension\s*)?(ingredients|thành phần)$/i],
@@ -138,15 +174,19 @@
     catch{throw new Error('Flow: chưa tìm thấy tùy chọn 10 giây. Cần kiểm tra các thời lượng model hỗ trợ.');}
     (await L.until(()=>L.find(/^x1$/i))).click();
     await L.key(id,'Escape');
+    composer=await L.until(()=>L.all('flow-base-prompt-box').find(L.visible));
     const old=new Set(L.all('flow-video-tile img').map(img=>img.src));
     const field=await L.until(()=>L.all('[contenteditable="true"]',composer).find(L.visible));
     const {assets}=await L.bridge('assets',id);
     if(assets.length!==1)throw new Error('Cần đúng một ảnh đầu vào cho video.');
     await L.progress(id,'Flow: đang dán ảnh và chờ ảnh tải xong');
     L.pasteImage(field,assets[0]);
-    let added=false;
+    let added=false, consented=false;
     try{
       await L.until(()=>{
+        const rights=L.all('[role="dialog"]').find(el=>L.visible(el)&&/quyền sử dụng hình ảnh này|rights to this image|image usage rights/i.test(el.innerText));
+        const agree=rights&&L.find(/^(tôi đồng ý|i agree)$/i,rights);
+        if(!consented&&agree){agree.click();consented=true;}
         if(L.all('img[alt="Ingredient image"],img[alt="Hình ảnh thành phần"],img[alt="Ảnh thành phần"]',composer).some(img=>img.complete&&img.naturalWidth>0))return true;
         const add=L.find(/^add to prompt$|^thêm vào (câu lệnh|lời nhắc)$/i);
         if(!added&&add&&!add.disabled&&add.getAttribute('aria-disabled')!=='true'){add.click();added=true;}
@@ -303,11 +343,11 @@
     return {checked:true};
   }
   const host=location.hostname;
-  const providerMap={generate_image:chatImage,collect_image:chatImage,flow_video:flowVideo,collect_video:collectVideo,excel_snapshot:excelSnapshot,excel_tick:excelTick,
+  const providerMap={generate_image:chatImage,collect_image:chatImage,flow_project:flowProject,flow_video:flowVideo,collect_video:collectVideo,excel_snapshot:excelSnapshot,excel_tick:excelTick,
     flow_music:async task=>{const result=await globalThis.lofiProviders.flow_music(task);if(!result?.ok)throw new Error(result?.error||'Music generation failed');return {};}};
   function capabilities(){
     if(host==='chatgpt.com')return ['generate_image','collect_image'];
-    if(host==='flow.google.com')return ['flow_video','collect_video'];
+    if(host==='flow.google.com')return ['flow_project','flow_video','collect_video'];
     if(host==='flowmusic.app'||host==='www.flowmusic.app')return ['flow_music','collect_music'];
     if((host==='cmcuni-my.sharepoint.com'||host.endsWith('.officeapps.live.com'))&&(nameBox()||L.find(/^(file|tệp)$/i)))return ['excel_snapshot','excel_tick'];
     return [];
@@ -337,6 +377,9 @@
           controls:L.all('[role],button,label').filter(el=>L.visible(el)).slice(-100).map(el=>({tag:el.tagName,role:el.getAttribute('role'),name:L.name(el).slice(0,180)})),
           buttons:L.all('main button').map(L.name).filter(Boolean).slice(-25)
         };
+        if(m.task.kind==='flow_video')structure.modeControls=L.all('button')
+          .filter(el=>/^(tác nhân|agent|settings trigger|điều kiện kích hoạt cài đặt)$/i.test(L.name(el)))
+          .map(el=>({visible:L.visible(el),html:el.outerHTML.slice(0,1500)}));
         try{await L.bridge('diagnostic',m.task.id,{text:JSON.stringify(structure,null,2)+'\n'+document.body.innerText.slice(-12000)});}catch{}
         try{await L.bridge('result',m.task.id,{ok:false,error:String(error)});}catch{}
       }

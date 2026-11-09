@@ -275,7 +275,7 @@ def prepare_clip(config: dict, scratch: Path, emit) -> Path:
                  **{k: config.get(k) for k in ("variant", "box", "edge", "grain", "tile", "fps", "seconds")},
                  "device": processor.device}
     key = hashlib.sha256(json.dumps(signature, sort_keys=True).encode()).hexdigest()[:24]
-    folder = Path(config["home"])/"prepared"/key
+    folder = Path(config.get("media_cache", config["home"]))/"prepared"/key
     dest, meta = folder/"clip.mp4", folder/"metadata.json"
     if dest.is_file() and meta.is_file():
         try:
@@ -352,7 +352,8 @@ def run_job(config: dict) -> None:
             if not is_image and config["seamless"]:
                 emit("Làm mượt điểm nối loop")
                 prepared = prepare_seamless_master(prepared, fps=fps, overlap=config["overlap"],
-                    section_seconds=60, align_sections=False, cache=Path(config["home"]), work=scratch)
+                    section_seconds=60, align_sections=False,
+                    cache=Path(config.get("media_cache", config["home"])), work=scratch)
             section_seconds = 60
             if config["dust"]:
                 loop_frames = media_info(prepared)["frames"]

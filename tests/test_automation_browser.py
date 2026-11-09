@@ -29,6 +29,26 @@ def scripts(page):
     page.evaluate('lofi.pause=async()=>new Promise(r=>setTimeout(r,5))')
 
 
+def test_new_flow_project_is_created_once_and_its_url_is_saved(page):
+    page.route('https://flow.google.com/**',lambda route:route.fulfill(
+        body='<button id="new"><mat-icon>add</mat-icon>Dự án mới</button>',content_type='text/html; charset=utf-8'))
+    page.goto('https://flow.google.com/')
+    page.evaluate('''() => {
+      window.events=[];window.creates=0;
+      chrome={runtime:{sendMessage:async message=>{events.push(message);return {ok:true}}}};
+      document.querySelector('#new').onclick=()=>{
+        creates++;
+        history.pushState({},'', '/project/12345678-aaaa-bbbb-cccc-123456789abc');
+      };
+    }''')
+    scripts(page)
+    result=page.evaluate('lofiProviderTest.providerMap.flow_project({id:"task",payload:{title:"LOFI-001",timeout:2}})')
+    assert result['url']=='https://flow.google.com/project/12345678-aaaa-bbbb-cccc-123456789abc'
+    assert page.evaluate('creates')==1
+    assert page.evaluate('events.filter(e=>e.submitted).length')==1
+    assert page.evaluate('events.at(-1).session_url')==result['url']
+
+
 def test_music_collection_opens_click_submenu_and_keeps_same_title_takes_separate(page):
     page.set_content('''<article><a href="https://www.flowmusic.app/song/first">Same title</a>
         <button aria-label="Play Same title"></button><button id="old" aria-label="More options for Same title"></button></article>
@@ -84,10 +104,17 @@ def test_flow_reacquires_editor_after_pasting_image(page,collect):
       const box=document.querySelector('flow-base-prompt-box');
       window.sent=[];
       box.addEventListener('paste',()=>{
-        box.querySelector('[contenteditable]').remove();
-        const editor=document.createElement('div');editor.contentEditable='true';box.prepend(editor);
-        const image=new Image();image.alt='Ingredient image';
-        image.src='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>';box.append(image);
+        const dialog=document.createElement('div');
+        dialog.setAttribute('role','dialog');
+        dialog.innerHTML='Quyền sử dụng hình ảnh này<button>Tôi đồng ý</button>';
+        document.body.append(dialog);
+        dialog.querySelector('button').onclick=()=>{
+          dialog.remove();
+          box.querySelector('[contenteditable]').remove();
+          const editor=document.createElement('div');editor.contentEditable='true';box.prepend(editor);
+          const image=new Image();image.alt='Ingredient image';
+          image.src='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>';box.append(image);
+        };
       });
       document.querySelector('#send').onclick=()=>{
         sent.push(box.querySelector('[contenteditable]').innerText);
@@ -103,11 +130,29 @@ def test_flow_reacquires_editor_after_pasting_image(page,collect):
     }''')
     scripts(page)
     task={'id':'test','payload':{'model':'Omni 1.1 Flash','prompt':'Animate the leaves gently','timeout':2}}
+    if not collect:
+        page.evaluate('''() => {
+          const manual=[...document.querySelectorAll('button')].find(el=>el.textContent==='Điều kiện kích hoạt cài đặt');
+          manual.hidden=true;
+          document.body.insertAdjacentHTML('beforeend','<button id="history">Mở nhật ký phiên</button><button id="close">Đóng</button><button id="agent" hidden>Tác nhân</button>');
+          document.querySelector('#close').onclick=()=>{
+            document.querySelector('#history').remove();
+            document.querySelector('#close').remove();
+            document.querySelector('#agent').hidden=false;
+          };
+          document.querySelector('#agent').onclick=()=>{
+            manual.hidden=false;
+            document.querySelector('#agent').remove();
+            window.closedAgent=true;
+          };
+        }''')
     if collect:
         page.evaluate("document.body.insertAdjacentHTML('beforeend','<flow-video-tile><img src=old.png>Animate the leaves gently<button>Tuỳ chọn khác</button></flow-video-tile>')")
     result=page.evaluate('args=>lofiProviderTest.providerMap[args.collect?"collect_video":"flow_video"](args.task)',{'task':task,'collect':collect})
     assert page.evaluate('sent')==([] if collect else [task['payload']['prompt']])
     assert not page.evaluate('Boolean(window.clickedSidebar)')
+    if not collect:
+        assert page.evaluate('closedAgent')
     assert result['path']=='video.mp4'
 
 

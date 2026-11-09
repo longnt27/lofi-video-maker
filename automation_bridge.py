@@ -307,7 +307,7 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
         dest=folder/('asset'+path.suffix.lower())
         if dest.exists(): raise ValueError('Artifact already exists; refusing overwrite')
         with path.open('rb') as src,dest.open('xb') as out: shutil.copyfileobj(src,out)
-        task['artifact']=str(dest); engine.put_task(task)
+        task.update(artifact=str(dest), download_source=str(path)); engine.put_task(task)
         return {'ok':True,'path':str(dest)}
 
     @app.post('/bridge/result')
@@ -315,7 +315,7 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
         b=await request.json(); task=owned(b['id'],request.state.role)
         if b.get('ok'):
             value=b.get('result') or {}
-            if task['kind']!='excel_tick':
+            if task['kind'] not in ('excel_tick','flow_project'):
                 if not task.get('artifact'):
                     message='No validated artifact saved'
                     if task['kind'] in ('generate_image','collect_image'):
