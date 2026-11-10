@@ -62,8 +62,24 @@ async function downloaded(id){
 }
 async function release(close=false){
   releasing=true;const previous=active;active=null;watch=null;
-  try{await chrome.storage.session.remove('active');if(previous){try{await chrome.debugger.detach({tabId:previous.tab});}catch{}if(close){try{await chrome.tabs.remove(previous.tab);}catch{}}}}
+  try{await chrome.storage.session.remove('active');if(previous){try{await chrome.debugger.detach({tabId:previous.tab});}catch{}if(close&&!previous.reused){try{await chrome.tabs.remove(previous.tab);}catch{}}}}
   finally{releasing=false;}
+}
+async function findPendingMusicTab(task){
+  const tabs=await chrome.tabs.query({url:['https://www.flowmusic.app/*','https://flowmusic.app/*']});
+  const probe={type:'probe-music-preference',payload:task.payload};
+  const matches=[];
+  for(const tab of tabs){
+    let response=await chrome.tabs.sendMessage(tab.id,probe,{frameId:0}).catch(()=>null);
+    if(!response){
+      // An unpacked extension reload invalidates the scripts in already-open tabs.
+      await chrome.scripting.executeScript({target:{tabId:tab.id},files:['shared.js','music.js','providers.js']}).catch(()=>{});
+      response=await chrome.tabs.sendMessage(tab.id,probe,{frameId:0}).catch(()=>null);
+    }
+    if(response?.matches)matches.push(tab);
+  }
+  if(matches.length!==1)throw new Error('Cần đúng một tab Flow Music đang hiện lựa chọn của lượt này. Giữ tab đó mở rồi bấm Tiếp tục.');
+  return matches[0];
 }
 async function poll(){
   if(polling||active||releasing)return {ok:true};polling=true;let claimed=false,task;
@@ -81,10 +97,15 @@ async function poll(){
     await api('claim',{id:task.id});claimed=true;
     // A background tab can defer ChatGPT's conversation rendering indefinitely.
     // Give the job an active tab in its own unfocused window.
-    const window=await chrome.windows.create({url:task.payload.url,type:'normal',focused:false});
-    const tab=window.tabs?.[0]||(await chrome.tabs.query({windowId:window.id}))[0];
+    const reused=Boolean(task.payload.recover_preference);
+    let tab;
+    if(reused)tab=await findPendingMusicTab(task);
+    else{
+      const window=await chrome.windows.create({url:task.payload.url,type:'normal',focused:false});
+      tab=window.tabs?.[0]||(await chrome.tabs.query({windowId:window.id}))[0];
+    }
     if(!tab)throw new Error('Chrome did not create the automation tab.');
-    active={id:task.id,tab:tab.id,kind:task.kind,url:task.payload.url};await chrome.storage.session.set({active});
+    active={id:task.id,tab:tab.id,kind:task.kind,url:task.payload.url,reused};await chrome.storage.session.set({active});
     await chrome.debugger.attach({tabId:tab.id},'1.3');
     await chrome.debugger.sendCommand({tabId:tab.id},'Page.enable');
     try{await chrome.debugger.sendCommand({tabId:tab.id},'Page.setDownloadBehavior',{behavior:'allow'});}catch{}
@@ -112,7 +133,7 @@ chrome.runtime.onMessage.addListener((m,sender,reply)=>{
     if(!active){const saved=await chrome.storage.session.get('active');active=saved.active||null;}
     if(!active||m.id!==active.id||sender.tab?.id!==active.tab)throw new Error('Not the active task tab');
     if(m.type==='state')return api('state',{id:m.id});
-    if(m.type==='progress')return api('progress',{id:m.id,message:m.message||m.phase,submitted:m.submitted||['submitting','submitted','downloading'].includes(m.phase),session_url:active.kind.startsWith('excel')?active.url:sender.url,song_url:m.song_url});
+    if(m.type==='progress')return api('progress',{id:m.id,message:m.message||m.phase,submitted:m.submitted||['submitting','submitted','downloading'].includes(m.phase),session_url:active.kind.startsWith('excel')?active.url:(m.session_url||sender.url),song_url:m.song_url});
     if(m.type==='image-file')return api('image-file',{id:m.id,image:m.image});
     if(m.type==='assets')return api('assets/'+m.id);
     if(m.type==='download-workbook'){

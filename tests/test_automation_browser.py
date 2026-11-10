@@ -29,6 +29,26 @@ def scripts(page):
     page.evaluate('lofi.pause=async()=>new Promise(r=>setTimeout(r,5))')
 
 
+def test_new_flow_project_is_created_once_and_its_url_is_saved(page):
+    page.route('https://flow.google.com/**',lambda route:route.fulfill(
+        body='<button id="new"><mat-icon>add</mat-icon>Dự án mới</button>',content_type='text/html; charset=utf-8'))
+    page.goto('https://flow.google.com/')
+    page.evaluate('''() => {
+      window.events=[];window.creates=0;
+      chrome={runtime:{sendMessage:async message=>{events.push(message);return {ok:true}}}};
+      document.querySelector('#new').onclick=()=>{
+        creates++;
+        history.pushState({},'', '/project/12345678-aaaa-bbbb-cccc-123456789abc');
+      };
+    }''')
+    scripts(page)
+    result=page.evaluate('lofiProviderTest.providerMap.flow_project({id:"task",payload:{title:"LOFI-001",timeout:2}})')
+    assert result['url']=='https://flow.google.com/project/12345678-aaaa-bbbb-cccc-123456789abc'
+    assert page.evaluate('creates')==1
+    assert page.evaluate('events.filter(e=>e.submitted).length')==1
+    assert page.evaluate('events.at(-1).session_url')==result['url']
+
+
 def test_music_collection_opens_click_submenu_and_keeps_same_title_takes_separate(page):
     page.set_content('''<article><a href="https://www.flowmusic.app/song/first">Same title</a>
         <button aria-label="Play Same title"></button><button id="old" aria-label="More options for Same title"></button></article>
@@ -49,6 +69,50 @@ def test_music_collection_opens_click_submenu_and_keeps_same_title_takes_separat
     assert page.evaluate('events.filter(x=>x.type==="progress").map(x=>x.song_url)')==[song]
     assert page.evaluate('events.map(x=>x.type).slice(-2)')==['mp3','finish-download']
 
+
+@pytest.mark.parametrize('recover',[False,True])
+def test_music_chooses_first_preference_for_current_prompt(page,recover):
+    page.set_content('''<main><section id="older"><h2>Which do you prefer?</h2>
+        <button>No Preference</button><button>CHOOSE</button><button>CHOOSE</button></section>
+        <article><a href="https://www.flowmusic.app/song/old">Old take</a>
+        <button aria-label="Play Old take"></button><button aria-label="More options for Old take"></button></article>
+        <div id="turns"></div><textarea aria-label="Chat message"></textarea>
+        <button id="send" aria-label="Send message">Send</button>
+        <button id="download" hidden>Download audio</button><button id="format" hidden>MP3</button></main>''')
+    scripts(page)
+    page.add_script_tag(path=str(ROOT/'browser_extensions/flow_music/content.js'))
+    page.evaluate('''recover => {
+      window.events=[];window.chosen=[];window.sent=0;
+      const editor=document.querySelector('textarea');
+      window.chrome={runtime:{sendMessage:async m=>{
+        events.push(m);
+        if(m.type==='key'&&m.text!==undefined)editor.value=m.text;
+        return {ok:true,cancel_requested:false};
+      }}};
+      document.querySelectorAll('#older button').forEach(el=>el.onclick=()=>chosen.push('older'));
+      const createPreference=text=>{
+        const turns=document.querySelector('#turns');
+        const prompt=document.createElement('div');prompt.textContent=text;turns.append(prompt);
+        const panel=document.createElement('section');
+        panel.innerHTML='<h2>Which do you prefer?</h2><button>No Preference</button><div><button>CHOOSE</button></div><div><button>CHOOSE</button></div>';
+        turns.append(panel);
+        [...panel.querySelectorAll('button')].forEach((el,index)=>el.onclick=()=>{
+          chosen.push(index);
+          panel.remove();
+          turns.insertAdjacentHTML('beforeend','<article><a href="https://www.flowmusic.app/song/selected">Chosen take</a><button aria-label="Play Chosen take"></button><button id="more" aria-label="More options for Chosen take"></button></article>');
+          document.querySelector('#more').onclick=()=>document.querySelector('#download').hidden=false;
+        });
+      };
+      document.querySelector('#send').onclick=()=>{sent++;createPreference(editor.value);};
+      document.querySelector('#download').onclick=()=>document.querySelector('#format').hidden=false;
+      if(recover)createPreference('Warm piano.\\n\\nCreate the finished music now. Do not ask follow-up questions.');
+    }''',recover)
+    payload={'prompt':'Warm piano.','instrumental':False,'format':'mp3','timeout':8,'recover_preference':recover}
+    page.evaluate('payload=>lofiProviderTest.providerMap[payload.recover_preference?"collect_music":"flow_music"]({id:"job",payload})',payload)
+    assert page.evaluate('chosen')==[1]  # The first CHOOSE, after No Preference.
+    assert page.evaluate('sent')==(0 if recover else 1)
+    assert page.evaluate('events.find(m=>m.song_url).song_url')=='https://www.flowmusic.app/song/selected'
+    assert page.evaluate('events.at(-1).type')=='finish-download'
 
 def test_flow_menu_radio_options_with_icon_text_are_found(page):
     page.set_content('''<div role="menuitemradio">videocam\nVideo</div>
@@ -84,10 +148,17 @@ def test_flow_reacquires_editor_after_pasting_image(page,collect):
       const box=document.querySelector('flow-base-prompt-box');
       window.sent=[];
       box.addEventListener('paste',()=>{
-        box.querySelector('[contenteditable]').remove();
-        const editor=document.createElement('div');editor.contentEditable='true';box.prepend(editor);
-        const image=new Image();image.alt='Ingredient image';
-        image.src='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>';box.append(image);
+        const dialog=document.createElement('div');
+        dialog.setAttribute('role','dialog');
+        dialog.innerHTML='Quyền sử dụng hình ảnh này<button>Tôi đồng ý</button>';
+        document.body.append(dialog);
+        dialog.querySelector('button').onclick=()=>{
+          dialog.remove();
+          box.querySelector('[contenteditable]').remove();
+          const editor=document.createElement('div');editor.contentEditable='true';box.prepend(editor);
+          const image=new Image();image.alt='Ingredient image';
+          image.src='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>';box.append(image);
+        };
       });
       document.querySelector('#send').onclick=()=>{
         sent.push(box.querySelector('[contenteditable]').innerText);
@@ -103,11 +174,29 @@ def test_flow_reacquires_editor_after_pasting_image(page,collect):
     }''')
     scripts(page)
     task={'id':'test','payload':{'model':'Omni 1.1 Flash','prompt':'Animate the leaves gently','timeout':2}}
+    if not collect:
+        page.evaluate('''() => {
+          const manual=[...document.querySelectorAll('button')].find(el=>el.textContent==='Điều kiện kích hoạt cài đặt');
+          manual.hidden=true;
+          document.body.insertAdjacentHTML('beforeend','<button id="history">Mở nhật ký phiên</button><button id="close">Đóng</button><button id="agent" hidden>Tác nhân</button>');
+          document.querySelector('#close').onclick=()=>{
+            document.querySelector('#history').remove();
+            document.querySelector('#close').remove();
+            document.querySelector('#agent').hidden=false;
+          };
+          document.querySelector('#agent').onclick=()=>{
+            manual.hidden=false;
+            document.querySelector('#agent').remove();
+            window.closedAgent=true;
+          };
+        }''')
     if collect:
         page.evaluate("document.body.insertAdjacentHTML('beforeend','<flow-video-tile><img src=old.png>Animate the leaves gently<button>Tuỳ chọn khác</button></flow-video-tile>')")
     result=page.evaluate('args=>lofiProviderTest.providerMap[args.collect?"collect_video":"flow_video"](args.task)',{'task':task,'collect':collect})
     assert page.evaluate('sent')==([] if collect else [task['payload']['prompt']])
     assert not page.evaluate('Boolean(window.clickedSidebar)')
+    if not collect:
+        assert page.evaluate('closedAgent')
     assert result['path']=='video.mp4'
 
 

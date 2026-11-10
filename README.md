@@ -1,7 +1,7 @@
 # Lo-fi Video Maker
 
-The local Studio now includes a **Tự động hóa** tab for the Excel → two-pass
-ChatGPT image → Google Flow → Flow Music → mix → Excel checkbox → Telegram approval
+The local Studio now includes a **Tự động hóa** tab for the Excel →
+ChatGPT image → Google Flow → Flow Music → mix → Excel checkbox
 queue. See [setup, permissions and validation status](AUTOMATION.md).
 
 Create a long-form lo-fi music video from **one seamlessly looping clip** and a **folder of songs**. The tool joins music with optional crossfades, repeats the background until the soundtrack ends, alternates clean and drifting-dust sections, and fades **both audio and video** at the start and end.
@@ -300,6 +300,17 @@ python lofi_studio.py --device auto
 
 Open the localhost URL shown in the terminal. Upload once, select a fixed
 watermark region (or disable cleanup), and preview the image quality.
+
+For a still image with automatically generated music, open **Xử lý ảnh**,
+upload the image, enter a music prompt and track count, then click **Tự tạo nhạc
+Flow Music và MP4**. This uses the same signed-in Flow Music session and `main`
+Chrome extension as the Excel/video automation. Configure that session in
+**Tự động hóa** and keep the extension connected first. The image tab's **Mở
+Chrome main để cài extension** button opens the selected profile and shows the
+extension folder for Chrome's **Load unpacked** action. Each generated track
+uses the account's normal credits. The finished tracks feed the existing image
+mix renderer, which repeats the still image for the playlist duration. The
+manual music-folder button remains available.
 Choose a music folder with the native picker (on the computer running Studio),
 or paste its path. Supported tracks are listed in natural filename order with
 their lengths and the expected playlist duration after crossfades. Subfolders

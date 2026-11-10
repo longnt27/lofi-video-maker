@@ -49,7 +49,7 @@ def direct_workbook_download(task, path, profile):
             and path.stat().st_mtime >= datetime.fromisoformat(task['created_at']).timestamp())
 
 
-def matches_reference(image, references):
+def matches_reference(image, references, tolerance=2):
     import cv2
     size=(48,48)
     thumbnail=cv2.resize(image,size,interpolation=cv2.INTER_AREA)
@@ -58,9 +58,16 @@ def matches_reference(image, references):
         if original is None:
             continue
         reference_thumb=cv2.resize(original,size,interpolation=cv2.INTER_AREA)
-        if cv2.absdiff(thumbnail,reference_thumb).mean()<=2:
+        if cv2.absdiff(thumbnail,reference_thumb).mean()<=tolerance:
             return True
     return False
+
+
+def is_task_reference(image, task, style_references):
+    if task['payload'].get('purpose') == 'thumbnail':
+        # A thumbnail should look like its base image, with a local text edit.
+        return matches_reference(image, task['payload']['assets'], tolerance=0.2)
+    return matches_reference(image, style_references)
 
 
 def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
@@ -158,6 +165,11 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
     def start(options: StartOptions = StartOptions()):
         engine.start(options.local_review, options.restart_failed)
         return {'ok':True}
+
+    @app.post('/api/music/start')
+    async def start_music(request: Request):
+        body = await request.json()
+        return {'run_id':engine.start_music(body.get('prompt'), body.get('count'))}
 
     @app.post('/api/continue-image')
     async def continue_image(request: Request):
@@ -271,7 +283,7 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
             task=owned(body['id'],request.state.role)
             if task['kind'] not in ('generate_image','collect_image'):
                 raise ValueError('Sai bước nhận ảnh.')
-            if matches_reference(image,engine.settings.references):
+            if is_task_reference(image,task,engine.settings.references):
                 return {'ok':True,'reference':True}
             dest=engine.home/'assets'/task['id']/'asset.png'
             dest.parent.mkdir(parents=True,exist_ok=True)
@@ -295,7 +307,7 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
             import cv2
             image=cv2.imread(str(path))
             if image is None: raise ValueError('Downloaded image did not decode')
-            if matches_reference(image,engine.settings.references):
+            if is_task_reference(image,task,engine.settings.references):
                 return {'ok':True,'reference':True}
         else:
             from fallin_preprocess import media_info
@@ -307,7 +319,7 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
         dest=folder/('asset'+path.suffix.lower())
         if dest.exists(): raise ValueError('Artifact already exists; refusing overwrite')
         with path.open('rb') as src,dest.open('xb') as out: shutil.copyfileobj(src,out)
-        task['artifact']=str(dest); engine.put_task(task)
+        task.update(artifact=str(dest), download_source=str(path)); engine.put_task(task)
         return {'ok':True,'path':str(dest)}
 
     @app.post('/bridge/result')
@@ -315,7 +327,7 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
         b=await request.json(); task=owned(b['id'],request.state.role)
         if b.get('ok'):
             value=b.get('result') or {}
-            if task['kind']!='excel_tick':
+            if task['kind'] not in ('excel_tick','flow_project'):
                 if not task.get('artifact'):
                     message='No validated artifact saved'
                     if task['kind'] in ('generate_image','collect_image'):

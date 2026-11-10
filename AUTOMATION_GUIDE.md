@@ -57,7 +57,7 @@ Mỗi chu trình tự động hóa sẽ hoàn thành trọn vẹn 1 kịch bản
 - Tự động lọc bỏ các ảnh style tham chiếu, trích xuất đúng ảnh mới do AI tạo ra và tải về máy.
 
 ### Bước 3: Tạo video nền bằng Google Flow (`flow_video`)
-- Extension trên Profile 20 mở Google Flow project.
+- Extension trên profile main tự tạo Google Flow project mới cho mỗi kịch bản và lưu link để dùng lại khi tiếp tục sau lỗi.
 - Tải ảnh đã tạo ở Bước 2 lên.
 - Cấu hình chuẩn xác: **Omni 1.1 Flash**, **Video / Ingredients**, tỷ lệ **16:9**, độ phân giải **720p**, thời lượng **10 giây**, số lượng **x1**.
 - Gửi prompt chuyển động vi mô (lá lay nhẹ, mái hiên dao động nhỏ...).
@@ -128,7 +128,7 @@ Mỗi chu trình tự động hóa sẽ hoàn thành trọn vẹn 1 kịch bản
 1. Mở giao diện điều khiển tại: `http://127.0.0.1:7861` (hoặc tab **Tự động hóa** trên `http://127.0.0.1:7860`).
 2. Kiểm tra các trường cấu hình:
    - **Excel workbook URL**: Link SharePoint chia sẻ file `LoFi_100_Kich_Ban.xlsx`.
-   - **Google Flow Project URL**: Link project Google Flow của bạn.
+   - **Google Flow**: Tự tạo project mới cho mỗi kịch bản bằng profile main đã chọn.
    - **ChatGPT Project URL**: Link Custom GPT Project tạo ảnh LoFi.
    - **Flow Music Session URL**: Link phiên làm việc Flow Music.
    - **Thư mục xuất (Output dir)**: `D:/download/LoFi_Exports` (hoặc thư mục tùy chọn).

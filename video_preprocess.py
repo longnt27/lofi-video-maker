@@ -308,7 +308,15 @@ def _write_inpaint_status(path: Path, phase: str, frames: int, total: int) -> No
     data = {"phase": phase, "frames": frames, "total": total, "updated": time.time()}
     tmp = path.with_suffix(".new")
     tmp.write_text(json.dumps(data), encoding="utf-8")
-    tmp.replace(path)
+    for attempt in range(10):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError as error:
+            # On Windows the parent can still have the old progress file open.
+            if getattr(error, "winerror", None) not in (5, 32, 33) or attempt == 9:
+                raise
+            time.sleep(0.02)
 
 
 def run_inpaint_worker(input_path: Path, output_path: Path,
