@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 import posixpath
 import re
+import stat
 import tempfile
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile
@@ -166,6 +167,7 @@ def mark_completed(path: Path, sheet: str, record_id: str, id_cell: str,
             if not backup.exists():
                 with backup.open('xb') as saved:
                     saved.write(original)
+            os.chmod(temporary, stat.S_IMODE(path.stat().st_mode))
             os.replace(temporary, path)
     except PermissionError:
         raise ValueError('Không ghi được file Excel. Đóng file trong Excel rồi bấm Tiếp tục.') from None

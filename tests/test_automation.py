@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import stat
 from pathlib import Path
 import time
 from unittest.mock import Mock
@@ -90,6 +91,61 @@ def test_resume_renders_when_reduced_music_count_is_already_met(engine,monkeypat
     rendered.assert_called_once_with()
     assert engine.state['task_id']==pending_id
     assert engine.next_task('main') is None
+def test_image_music_uses_existing_flow_queue_then_saves_playlist(engine,tmp_path):
+    e=engine
+    run=e.start_music('Warm instrumental lo-fi piano',2)
+    assert e.task(e.state['task_id'])['kind']=='flow_music'
+    assert e.task(e.state['task_id'])['payload']['prompt']=='Warm instrumental lo-fi piano'
+    for index in range(2):
+        track=tmp_path/f'track{index}.mp3'
+        track.write_bytes(f'audio {index}'.encode())
+        finish(e,{'path':str(track)})
+    assert e.state['status']=='complete' and e.state['run_id']==run
+    assert [p.read_bytes() for p in sorted(Path(e.state['music_dir']).iterdir())]==[b'audio 0',b'audio 1']
+    assert e.next_task('main') is None
+
+
+def test_image_music_requires_main_extension_and_does_not_resubmit_failed_song(engine):
+    e=engine
+    e.connected['main']=0
+    with pytest.raises(ValueError,match='Extension main'):
+        e.start_music('Warm instrumental lo-fi piano',1)
+    e.connected['main']=time.time()
+    e.start_music('Warm instrumental lo-fi piano',1)
+    task=e.claim(e.state['task_id'],'main')
+    e.progress(task['id'],'main','Prompt sent',submitted=True)
+    e.fail_task(task['id'],'main','Song download failed')
+    with pytest.raises(ValueError,match='đã gửi prompt'):
+        e.resume()
+    assert e.state['status']=='failed'
+
+
+def test_image_music_resumes_recorded_song_without_excel_setup(engine):
+    e=engine
+    e.start_music('Warm instrumental lo-fi piano',1)
+    task=e.claim(e.state['task_id'],'main')
+    song='https://www.flowmusic.app/song/image-take'
+    e.progress(task['id'],'main','Song ready',submitted=True,song_url=song)
+    e.fail_task(task['id'],'main','Download interrupted')
+    e.resume()
+    resumed=e.task(e.state['task_id'])
+    assert resumed['kind']=='collect_music'
+    assert resumed['payload']['song_url']==song
+
+
+def test_image_music_api_requires_ui_token_and_uses_main_queue(tmp_path):
+    home=tmp_path/'bridge'
+    app=create_app(home,start_loop=False)
+    app.state.engine.connected['main']=time.time()
+    token=json.loads((home/'bridge-keys.json').read_text())['ui']
+    with TestClient(app,base_url='http://127.0.0.1:7861') as client:
+        url='/api/music/start'
+        data={'prompt':'Warm instrumental lo-fi piano','count':2}
+        assert client.post(url,json=data).status_code==403
+        response=client.post(url,json=data,headers={'X-LoFi-Token':token})
+        assert response.status_code==200
+        assert client.get('/api/state').json()['state']['run_id']==response.json()['run_id']
+        assert app.state.engine.task(app.state.engine.state['task_id'])['kind']=='flow_music'
 
 
 def test_music_resume_collects_exact_song_without_sending_prompt(engine,monkeypatch):
@@ -137,10 +193,13 @@ def test_workbook_preserves_file_and_reads_native_boolean(workbook):
 
 
 def test_local_checkbox_preserves_package_and_is_idempotent(workbook, tmp_path):
+    os.chmod(workbook, 0o644)
+    original_mode = stat.S_IMODE(workbook.stat().st_mode)
     before=workbook.read_bytes()
     backup=tmp_path/'backup.xlsx'
     mark_completed(workbook,'Kich_ban','LOFI-001','A8','I8',backup)
     assert backup.read_bytes()==before
+    assert stat.S_IMODE(workbook.stat().st_mode)==original_mode
     assert read_sheets(workbook)['Kich_ban'][8]['I'] is True
     assert [row['id'] for row in queue_records(workbook)]==['LOFI-002']
     with ZipFile(io.BytesIO(before)) as old, ZipFile(workbook) as new:
@@ -207,7 +266,9 @@ def test_batch_runs_until_limit_or_workbook_is_empty(engine,workbook,tmp_path,mo
         engine.worker_log=io.BytesIO()
     monkeypatch.setattr(engine,'start_render',render)
     monkeypatch.setattr('studio_pipeline.read_state',lambda folder:{'status':'done'})
-    engine.start(local_review=True)
+    engine.settings.telegram_token=''
+    engine.settings.telegram_chat_id=''
+    engine.start()
     run_id=engine.state['run_id']
     for index in range(expected):
         engine.process_local_task()
@@ -347,8 +408,12 @@ def test_cleanup_runs_after_tick_and_keeps_final_mix_and_unrelated_files(engine,
     assert set(export.iterdir())=={mix,unrelated}
 
 
-def test_full_scenario_stops_until_correct_telegram_approval(engine,workbook,tmp_path,monkeypatch):
-    e=engine;e.start()
+def test_full_scenario_finishes_after_verified_excel_tick_without_telegram(engine,workbook,tmp_path,monkeypatch):
+    e=engine
+    e.settings.telegram_token=''
+    e.settings.telegram_chat_id=''
+    monkeypatch.setattr(Telegram,'check',lambda self:pytest.fail('Telegram is not required'))
+    e.start()
     finish(e,{'path':str(workbook)})
     image=e.task(e.state['task_id'])
     assert image['role']=='gpt' and image['kind']=='generate_image'

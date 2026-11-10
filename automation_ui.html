@@ -9,14 +9,13 @@
 <div class="row"><div>
 <label for="scenario_count">Số kịch bản mỗi lượt chạy</label>
 <input id="scenario_count" form="settings" type="number" value="1" min="1" step="1" required style="width:9rem">
-<small>Áp dụng khi bắt đầu lượt chạy mới.</small>
+<small>Áp dụng khi bắt đầu lượt chạy mới. Sau khi tick Excel, Studio tự chạy kịch bản tiếp theo đến khi đủ số lượng.</small>
 </div><div>
 <label for="music_count">Số bản nhạc Flow Music cho mỗi kịch bản</label>
 <input id="music_count" form="settings" type="number" value="3" min="1" max="30" step="1" required style="width:9rem">
 <small>Số đã chọn được lưu khi bấm Chạy hoặc Tiếp tục.</small>
 </div></div>
 <button id="start">Chạy automation</button><button class="secondary" id="pause">Dừng</button><button class="secondary" id="resume">Tiếp tục bước đang dừng</button>
-<label><input type="checkbox" id="localReview">Chỉ xem trước trên máy sau khi tick Excel</label>
 <button class="secondary" id="restart" hidden>Chạy lại từ Excel trong phiên mới</button>
 <details><summary>Khôi phục khi lỗi dịch vụ</summary><label for="song_url">Link bài Flow Music đã tạo</label><input id="song_url" type="url" placeholder="Dán link bài nếu phiên cũ dừng lúc tải nhạc"><label><input type="checkbox" id="resubmit">Tôi đã kiểm tra phiên trên web và cho phép gửi lại bước tạo ảnh/video/nhạc nếu bước đó đã gửi prompt.</label><small>Mặc định không gửi lại để tránh tạo trùng và tốn credit.</small></details>
 <video id="preview" controls hidden preload="none"></video><p id="tgerror"></p></section>
@@ -40,14 +39,12 @@
 <label for="watermark_box">Vùng watermark chuẩn hóa [x, y, w, h]</label><input id="watermark_box" placeholder="Lưu vùng đã khoanh từ tab Xử lý video"><small>Khoanh sát watermark trên một video Flow mẫu ở tab Xử lý video rồi bấm “Lưu vùng watermark cho tự động hóa”. Không tự đoán vùng xóa.</small>
 <div class="row"><div><label for="variant">Fallin</label><select id="variant"><option>soft</option><option>strong</option></select></div><div><label for="device">Thiết bị</label><select id="device"><option>cuda</option><option>auto</option><option>cpu</option></select></div></div>
 <label for="source_audio_volume">Tiếng môi trường (%)</label><input id="source_audio_volume" type="number" value="10" min="0" max="100"></details>
-<details open><summary>Telegram — gửi preview và chờ nút Approve</summary><label for="telegram_token">Bot token (chỉ nhập tại đây trên máy)</label><input id="telegram_token" type="password" autocomplete="new-password" placeholder="Token không hiển thị lại sau khi lưu">
-<div class="row"><div><label for="telegram_chat_id">Chat ID nhận thông báo</label><input id="telegram_chat_id" inputmode="numeric"></div><div><label for="telegram_reviewer_id">User ID được duyệt (bỏ trống nếu chat riêng của bạn)</label><input id="telegram_reviewer_id" inputmode="numeric"></div></div>
-<p>Bấm Start trong cuộc chat với bot trước. Token lưu trong cache local, không đưa lên Git. Chỉ callback từ đúng chat, đúng người và đúng bản mix mới được chạy tiếp.</p></details>
+
 <button>Lưu cấu hình</button><small id="saved"></small></form></section>
 <script>
 const config=__LOFI_CONFIG__,el=id=>document.getElementById(id);let initialized=false,currentPreview='';const selectionPending={main:false,gpt:false};let chromeProfiles=[];
 el('mainpath').textContent=config.home+'\\extensions\\main';el('gptpath').textContent=config.home+'\\extensions\\gpt';
-const fields=['excel_path','excel_url','main_profile','gpt_profile','gpt_project_url','flow_model','music_session_url','references','style_path','output_dir','scenario_count','music_count','preview_seconds','remove_watermark','watermark_box','variant','device','source_audio_volume','telegram_token','telegram_chat_id','telegram_reviewer_id'];
+const fields=['excel_path','excel_url','main_profile','gpt_profile','gpt_project_url','flow_model','music_session_url','references','style_path','output_dir','scenario_count','music_count','preview_seconds','remove_watermark','watermark_box','variant','device','source_audio_volume'];
 async function api(path,body){const r=await fetch(path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','X-LoFi-Token':config.token},...(body===undefined?{}:{body:JSON.stringify(body)})});const data=await r.json();if(!r.ok)throw new Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail));return data;}
 function error(e){el('error').textContent=e.message||String(e);}
 const steps=new Map([
@@ -99,12 +96,12 @@ batchProgress.textContent='Kịch bản đã hoàn tất: '+(s.completed?.length
 el('start').disabled=actionPending||s.cleanup_pending||!['idle','complete'].includes(s.status);el('resume').disabled=actionPending||!['paused','failed','interrupted'].includes(s.status);el('pause').disabled=['idle','paused'].includes(s.status)||(s.status==='complete'&&!s.cleanup_pending);
 el('restart').hidden=!['paused','failed','interrupted'].includes(s.status);
 el('music_count').disabled=actionPending||!initialized||!['idle','complete','paused','failed','interrupted'].includes(s.status);
-if(!initialized){chromeProfiles=(await api('/api/profiles')).profiles;for(const role of ['main','gpt']){const select=el(role+'_profile');select.replaceChildren();for(const p of chromeProfiles){const o=document.createElement('option');o.value=p.directory;o.textContent=p.name+' — '+(p.account||p.directory);select.append(o);}if(!chromeProfiles.some(p=>p.directory===data.settings[role+'_profile'])){const o=document.createElement('option');o.value=data.settings[role+'_profile'];o.textContent=o.value+' (chưa tìm thấy)';select.append(o);}}for(const key of fields){const input=el(key),v=data.settings[key];if(key==='references')input.value=(v||[]).join('\n');else if(key==='watermark_box')input.value=v?JSON.stringify(v):'';else if(input.type==='checkbox')input.checked=v;else input.value=v??'';}if(data.settings.telegram_configured)el('telegram_token').placeholder='Đã lưu token — để trống để giữ nguyên';initialized=true;el('music_count').disabled=actionPending||!['idle','complete','paused','failed','interrupted'].includes(s.status);}
+if(!initialized){chromeProfiles=(await api('/api/profiles')).profiles;for(const role of ['main','gpt']){const select=el(role+'_profile');select.replaceChildren();for(const p of chromeProfiles){const o=document.createElement('option');o.value=p.directory;o.textContent=p.name+' — '+(p.account||p.directory);select.append(o);}if(!chromeProfiles.some(p=>p.directory===data.settings[role+'_profile'])){const o=document.createElement('option');o.value=data.settings[role+'_profile'];o.textContent=o.value+' (chưa tìm thấy)';select.append(o);}}for(const key of fields){const input=el(key),v=data.settings[key];if(key==='references')input.value=(v||[]).join('\n');else if(key==='watermark_box')input.value=v?JSON.stringify(v):'';else if(input.type==='checkbox')input.checked=v;else input.value=v??'';}initialized=true;el('music_count').disabled=actionPending||!['idle','complete','paused','failed','interrupted'].includes(s.status);}
 for(const role of ['main','gpt']){const select=el(role+'_instance');if(document.activeElement!==select){const value=selectionPending[role]?select.value:data.browser_profiles.active[role];select.replaceChildren();const empty=document.createElement('option');empty.value='';empty.textContent='Chưa chọn / chưa nạp extension';select.append(empty);for(const instance of data.browser_profiles.instances[role]){const option=document.createElement('option');option.value=instance.id;option.textContent=instance.name+(instance.online?' · online':' · offline');select.append(option);}select.value=value||'';}}
 el('scenario_count').disabled=actionPending||s.cleanup_pending||!['idle','complete','paused','failed','interrupted'].includes(s.status);
 if(s.status==='awaiting_approval'||(s.status==='complete'&&s.review_path)){el('preview').hidden=false;const source='/api/review?run='+s.run_id;if(source!==currentPreview){el('preview').src=source;currentPreview=source;}}else el('preview').hidden=true;
 }catch(e){error(e);}}
-el('settings').onsubmit=async event=>{event.preventDefault();try{const data={};for(const key of fields){const input=el(key);data[key]=input.type==='checkbox'?input.checked:input.value;}data.references=data.references.split('\n').map(s=>s.trim()).filter(Boolean);data.watermark_box=data.watermark_box.trim()?JSON.parse(data.watermark_box):null;for(const k of ['music_count','source_audio_volume'])data[k]=Number(data[k]);data.preview_seconds=data.preview_seconds?Number(data.preview_seconds):null;await api('/api/settings',data);el('telegram_token').value='';if(data.telegram_token.trim())el('telegram_token').placeholder='Đã lưu token — để trống để giữ nguyên';el('saved').textContent=data.telegram_chat_id.trim()?'Đã lưu trên máy.':'Đã lưu trên máy. Cần điền Chat ID Telegram trước khi chạy.';el('error').textContent='';}catch(e){error(e);}};
+el('settings').onsubmit=async event=>{event.preventDefault();try{const data={};for(const key of fields){const input=el(key);data[key]=input.type==='checkbox'?input.checked:input.value;}data.references=data.references.split('\n').map(s=>s.trim()).filter(Boolean);data.watermark_box=data.watermark_box.trim()?JSON.parse(data.watermark_box):null;for(const k of ['music_count','source_audio_volume'])data[k]=Number(data[k]);data.preview_seconds=data.preview_seconds?Number(data.preview_seconds):null;await api('/api/settings',data);el('saved').textContent='Đã lưu trên máy.';el('error').textContent='';}catch(e){error(e);}};
 let actionPending=false;
 for(const action of ['start','pause','resume','restart'])el(action).onclick=async()=>{
   if(actionPending)return;
@@ -126,7 +123,7 @@ for(const action of ['start','pause','resume','restart'])el(action).onclick=asyn
       await api('/api/settings',settings);
     }
     const body=action==='resume'?{allow_resubmit:el('resubmit').checked,song_url:el('song_url').value}:
-      {local_review:el('localReview').checked,restart_failed:action==='restart'};
+      {local_review:false,restart_failed:action==='restart'};
     await api('/api/'+(action==='restart'?'start':action),body);
     el('song_url').value='';el('resubmit').checked=false;
   }catch(e){error(e);}

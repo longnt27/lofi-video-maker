@@ -137,9 +137,13 @@ class Engine:
         if c.preview_seconds is not None and c.preview_seconds < 1: raise ValueError('Thời lượng xem thử phải dương')
         for role in ('main','gpt'):
             if time.time()-self.connected.get(role, 0) > 75: raise ValueError(f'Extension profile {role} chưa kết nối')
-        if not local_review:
-            Telegram(c.telegram_token, c.telegram_chat_id, c.telegram_reviewer_id or None).check()
         Path(c.output_dir).mkdir(parents=True, exist_ok=True)
+
+    def preflight_music(self):
+        if self.settings.music_session_url and not MUSIC_SESSION_URL.fullmatch(self.settings.music_session_url):
+            raise ValueError('Cần link session Flow Music hợp lệ trong Tự động hóa.')
+        if time.time()-self.connected.get('main', 0) > 75:
+            raise ValueError('Extension main chưa kết nối. Mở Chrome main và đăng nhập Flow Music.')
 
     def public(self):
         with self.lock:
@@ -275,6 +279,23 @@ class Engine:
                           'telegram_offset':self.state.get('telegram_offset',0), 'local_review':local_review}
             self.enqueue('excel_snapshot', {'url':self.settings.excel_url})
 
+    def start_music(self, prompt, count):
+        with self.lock:
+            if self.state['status'] not in ('idle', 'complete'):
+                raise ValueError('Quy trình đang chạy hoặc dừng giữa chừng; tiếp tục hoặc xử lý trước khi tạo nhạc mới.')
+            if not isinstance(prompt, str) or not 5 <= len(prompt.strip()) <= 6000:
+                raise ValueError('Prompt nhạc cần 5–6000 ký tự.')
+            if type(count) not in (int, float) or not math.isfinite(count) or count != int(count) or not 1 <= count <= 30:
+                raise ValueError('Số bản nhạc phải từ 1 đến 30.')
+            self.preflight_music()
+            if self.state.get('run_id'):
+                atomic(self.home/'runs'/self.state['run_id']/'state.json', self.state)
+            self.state = {'run_id':uuid.uuid4().hex[:12], 'mode':'standalone_music', 'status':'running',
+                          'record':{'music_prompt':prompt.strip()}, 'artifacts':{}, 'music_index':0,
+                          'music_count':int(count), 'completed':[], 'telegram_offset':self.state.get('telegram_offset',0)}
+            self.enqueue_music()
+            return self.state['run_id']
+
     def complete_task(self, task_id, role, result):
         with self.lock:
             task = self.task(task_id)
@@ -335,7 +356,8 @@ class Engine:
                     self.state['music_session_url']=task['session_url']
                 self.state['artifacts'].setdefault('music',[]).append(result['path'])
                 self.state['music_index'] += 1
-                if self.state['music_index'] < self.settings.music_count: self.enqueue_music()
+                if self.state['music_index'] < self.state.get('music_count', self.settings.music_count): self.enqueue_music()
+                elif self.state.get('mode') == 'standalone_music': self.finish_music()
                 else: self.start_render()
             elif kind == 'excel_tick':
                 if result.get('checked') is not True: raise ValueError('Excel checkbox change was not verified')
@@ -369,6 +391,24 @@ class Engine:
         self.enqueue('flow_music', {'url':self.state.get('music_session_url') or self.settings.music_session_url or NEW_MUSIC_SESSION,
             'prompt':r['music_prompt'],
             'instrumental':True, 'format':'mp3', 'timeout':900})
+
+    def finish_music(self):
+        music = self.home/'runs'/self.state['run_id']/'music'
+        try:
+            music.mkdir(parents=True, exist_ok=True)
+            for index, path in enumerate(self.state['artifacts']['music'], 1):
+                source = Path(path)
+                dest = music/f'{index:02d}{source.suffix.lower()}'
+                if not dest.exists():
+                    partial = dest.with_suffix(dest.suffix+'.part')
+                    shutil.copy2(source, partial)
+                    os.replace(partial, dest)
+        except OSError as exc:
+            self.fail(f'Không lưu được playlist nhạc: {exc}')
+            return
+        self.state.update(status='complete', stage='complete', music_dir=str(music),
+                          message='Đã tạo đủ nhạc. Đang ghép video ảnh.')
+        self.save()
 
     def scenario_dir(self): return self.home/'runs'/self.state['run_id']/self.state['record']['id']
 
@@ -570,23 +610,28 @@ class Engine:
                 self.save()
                 self.cleanup_materials()
                 return
-            source = self.state.get('excel_source') or self.excel_source()
-            record_id = self.state.get('record', {}).get('id')
-            if source.get('path') and record_id:
-                rows = read_sheets(Path(source['path'])).get('Kich_ban', {}).values()
-                if any(row.get('A') == record_id and str(row.get('H', '')).strip() == 'BO_QUA' for row in rows):
-                    raise ValueError(f'{record_id} đã được đánh dấu bỏ qua. Bấm Chạy lại từ Excel để lấy kịch bản tiếp theo.')
-            self.preflight(self.state.get('local_review', False), source)
+            if self.state.get('mode') == 'standalone_music':
+                self.preflight_music()
+            else:
+                source = self.state.get('excel_source') or self.excel_source()
+                record_id = self.state.get('record', {}).get('id')
+                if source.get('path') and record_id:
+                    rows = read_sheets(Path(source['path'])).get('Kich_ban', {}).values()
+                    if any(row.get('A') == record_id and str(row.get('H', '')).strip() == 'BO_QUA' for row in rows):
+                        raise ValueError(f'{record_id} đã được đánh dấu bỏ qua. Bấm Chạy lại từ Excel để lấy kịch bản tiếp theo.')
+                self.preflight(self.state.get('local_review', False), source)
             task=self.task(self.state['task_id']) if self.state.get('task_id') else None
             if self.state.get('telegram_message_id') and self.state.get('output'):
                 # Resume still requires a fresh Telegram approval, never skips the gate.
                 self.state.update(status='notifying',notification_started=False); self.save(); return
             if task and task['kind'] in ('flow_music','collect_music') and task['status']!='done':
                 collected=len(self.state.get('artifacts',{}).get('music',[]))
-                if self.settings.music_count < collected:
+                music_count = self.state.get('music_count', self.settings.music_count)
+                if music_count < collected:
                     raise ValueError(f'Kịch bản đã tải {collected} bản nhạc. Chọn ít nhất {collected} bản để tiếp tục.')
-                if self.settings.music_count == collected:
-                    self.start_render()
+                if music_count == collected:
+                    if self.state.get('mode') == 'standalone_music': self.finish_music()
+                    else: self.start_render()
                     return
             if task and task.get('artifact') and task['status']!='done':
                 task['status']='running'; self.put_task(task); self.state['status']='running'
@@ -638,6 +683,10 @@ class Engine:
             if self.state.get('notification_started'):
                 self.state.update(status='notifying',notification_started=False); self.save(); return
             if self.state.get('artifacts',{}).get('music'):
+                if self.state.get('mode') == 'standalone_music':
+                    if self.state['music_index'] >= self.state['music_count']: self.finish_music()
+                    else: self.enqueue_music()
+                    return
                 self.start_render(); return
             self.enqueue('excel_snapshot',{'url':self.settings.excel_url})
 
@@ -736,7 +785,7 @@ class Engine:
             except Exception as exc:
                 with self.lock: self.fail(str(exc))
             try:
-                if not self.state.get('local_review') and self.settings.telegram_token and self.settings.telegram_chat_id:
+                if self.state['status']=='awaiting_approval' and self.settings.telegram_token and self.settings.telegram_chat_id:
                     bot=Telegram(self.settings.telegram_token,self.settings.telegram_chat_id,self.settings.telegram_reviewer_id or None)
                     for update in bot.updates(self.state.get('telegram_offset',0)):
                         if 'callback_query' in update: self.handle_callback(update['callback_query'])

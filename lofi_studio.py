@@ -44,7 +44,7 @@ def build_app(home: Path, device: str = "auto"):
     import numpy as np
     from gradio_image_annotation import image_annotator
     from fallin_preprocess import FrameProcessor, media_info, output_size
-    from studio_pipeline import JobRunner, choose_folder, collect_music, clock, read_state, open_output_folder
+    from studio_pipeline import JobRunner, choose_folder, collect_music, clock, read_state, open_output_folder, output_directory
 
     home = home.expanduser().resolve()
     home.mkdir(parents=True, exist_ok=True)
@@ -290,22 +290,81 @@ def build_app(home: Path, device: str = "auto"):
         )
         yield from execute(config, progress)
 
-    def save_automation_mask(path, ann):
-        if not path:
-            raise gr.Error("Chọn video Flow mẫu và khoanh vùng watermark trước.")
+    def automation_api(path, body=None):
         import json
         import requests
-        info = media_info(Path(path))
-        x, y, w, h = selection(ann, True, info)
         keys_path = Path(__file__).resolve().parent/"cache"/"automation"/"bridge-keys.json"
         if not keys_path.is_file():
             raise gr.Error("Khởi động Studio có bật Tự động hóa trước.")
         token = json.loads(keys_path.read_text(encoding="utf-8"))["ui"]
+        try:
+            response = requests.request("GET" if body is None else "POST", "http://127.0.0.1:7861"+path,
+                                        json=body, headers={"X-LoFi-Token":token}, timeout=10)
+            result = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise gr.Error(f"Không kết nối được bộ tạo nhạc: {exc}") from exc
+        if not response.ok:
+            raise gr.Error(result.get("detail", "Bộ tạo nhạc báo lỗi."))
+        return result
+
+    def export_auto_image_mix(path, variant, edge, tile, fps, prompt, count,
+                              crossfade, fade, dust, duration_choice, output_dir,
+                              progress=gr.Progress()):
+        image = cv2.imread(str(path)) if path else None
+        if image is None:
+            raise gr.Error("Upload ảnh hợp lệ trước.")
+        output_size(image.shape[1], image.shape[0], edge_value(edge))
+        try:
+            output_directory(output_dir, home)
+        except OSError as exc:
+            raise gr.Error(f"Không ghi được vào thư mục lưu: {exc}") from exc
+        run_id = automation_api("/api/music/start", {"prompt":prompt, "count":count})["run_id"]
+        while True:
+            state = automation_api("/api/state")["state"]
+            if state.get("run_id") != run_id:
+                raise gr.Error("Phiên tạo nhạc đã được thay bằng phiên khác.")
+            if state["status"] == "complete":
+                music_dir = state["music_dir"]
+                break
+            if state["status"] in ("failed", "paused", "interrupted"):
+                yield gr.skip(), state.get("message", "Tạo nhạc đã dừng.")
+                return
+            progress(None, desc=state.get("message", "Đang tạo nhạc"))
+            yield gr.skip(), f"Tạo nhạc Flow Music: {state['music_index']+1}/{state['music_count']} · {state.get('message','')}"
+            time.sleep(2)
+        yield from export_image_mix(path, variant, edge, tile, fps, music_dir, False, False, 42,
+                                    crossfade, fade, dust, duration_choice, output_dir, progress)
+
+    def export_saved_image_mix(path, variant, edge, tile, fps, crossfade, fade, dust,
+                               duration_choice, output_dir, progress=gr.Progress()):
+        state = automation_api("/api/state")["state"]
+        if state.get("mode") != "standalone_music" or state["status"] != "complete" or not state.get("music_dir"):
+            raise gr.Error("Chưa có playlist Flow Music hoàn tất để ghép.")
+        yield from export_image_mix(path, variant, edge, tile, fps, state["music_dir"], False, False, 42,
+                                    crossfade, fade, dust, duration_choice, output_dir, progress)
+
+    def cancel_image_mix():
+        message = runner.cancel()
+        try:
+            state = automation_api("/api/state")["state"]
+        except gr.Error:
+            return message
+        if state.get("mode") == "standalone_music" and state["status"] == "running":
+            automation_api("/api/pause", {})
+            return "Đã dừng tạo nhạc. Yêu cầu đã gửi có thể vẫn hoàn thành trên Flow Music."
+        return message
+
+    def open_music_setup():
+        result = automation_api("/api/open/main", {})
+        return "Trên máy chạy Studio, nạp extension trong Chrome main: " + result["folder"] + ". Sau đó đăng nhập Flow Music trong profile này."
+
+    def save_automation_mask(path, ann):
+        if not path:
+            raise gr.Error("Chọn video Flow mẫu và khoanh vùng watermark trước.")
+        info = media_info(Path(path))
+        x, y, w, h = selection(ann, True, info)
         box = [x/info["width"], y/info["height"], w/info["width"], h/info["height"]]
-        result = requests.post("http://127.0.0.1:7861/api/settings", json={"watermark_box":box,"remove_watermark":True},
-                               headers={"X-LoFi-Token":token}, timeout=10)
-        if not result.ok:
-            raise gr.Error(result.json().get("detail", "Không lưu được vùng watermark."))
+        automation_api("/api/settings", {"watermark_box":box,"remove_watermark":True})
         return "Đã lưu vùng watermark cho quy trình tự động."
 
     def inspect_music(folder, recursive, shuffle, seed, crossfade):
@@ -385,7 +444,7 @@ def build_app(home: Path, device: str = "auto"):
             for control in music_inputs:
                 control.change(inspect_music, inputs=music_inputs, outputs=[playlist_table, playlist_summary], trigger_mode="always_last")
         with gr.Tab("Xử lý ảnh"):
-            gr.Markdown("### Ảnh gốc → Upscale Fallin AI → Ghép folder nhạc → **Bản mix MP4**")
+            gr.Markdown("### Ảnh gốc → Upscale Fallin AI → Nhạc từ folder hoặc Flow Music → **Bản mix MP4**")
             with gr.Row():
                 with gr.Column():
                     gr.Markdown("### 1. Ảnh và Upscale")
@@ -405,6 +464,12 @@ def build_app(home: Path, device: str = "auto"):
                     gr.Markdown("### 2. Nhạc")
                     img_folder_btn = gr.Button("Chọn thư mục nhạc")
                     img_music = gr.Textbox(label="Thư mục nhạc", placeholder=r"D:\Music\LoFi")
+                    with gr.Accordion("Hoặc tự tạo nhạc bằng Flow Music", open=False):
+                        img_prompt = gr.Textbox(label="Prompt nhạc", lines=4, value="Warm instrumental lo-fi hip hop, soft piano, mellow drums, warm bass, no vocals.")
+                        img_music_count = gr.Number(value=3, precision=0, minimum=1, maximum=30, label="Số bản nhạc")
+                        gr.Markdown("Dùng session Flow Music và extension main đã cấu hình trong Tự động hóa. Mỗi bản nhạc dùng lượt tạo của tài khoản Flow Music.")
+                        img_setup_btn = gr.Button("Mở Chrome main để cài extension")
+                        img_setup_status = gr.Textbox(label="Cài đặt một lần", interactive=False)
                     with gr.Accordion("Danh sách nhạc", open=False):
                         img_scan_btn = gr.Button("Đọc lại danh sách")
                         img_playlist_table = gr.Dataframe(headers=["STT", "Bài nhạc", "Thời lượng"], datatype=["number", "str", "str"], interactive=False)
@@ -415,6 +480,8 @@ def build_app(home: Path, device: str = "auto"):
                     img_duration_choice = gr.Radio(["30 giây", "125 giây", "Toàn bộ playlist"], value="Toàn bộ playlist", label="Thời lượng (chọn 30 giây để thử)")
                     gr.Markdown("Mỗi lần bấm xuất chỉ lưu **một bản mix mới** vào thư mục này. File tạm không xuất vào đây. Các bản mix từ lần chạy trước vẫn được giữ.")
                     img_mix_btn = gr.Button("Tạo bản mix MP4 từ ảnh", variant="primary")
+                    img_auto_mix_btn = gr.Button("Tự tạo nhạc Flow Music và MP4")
+                    img_saved_mix_btn = gr.Button("Ghép MP4 từ nhạc Flow Music vừa tạo")
                     img_cancel_btn = gr.Button("Hủy", variant="stop")
                 with gr.Column():
                     img_report = gr.Textbox(label="Trạng thái", interactive=False)
@@ -424,10 +491,15 @@ def build_app(home: Path, device: str = "auto"):
                     img_open_folder_btn = gr.Button("Mở thư mục kết quả")
                     gr.Markdown("Lưu thẳng trên máy, không cần tải về. Fallin: renarchi, CC BY 4.0.")
             img_source.change(first_image, inputs=img_source, outputs=[img_full, img_report], concurrency_id="studio", concurrency_limit=1)
+            img_setup_btn.click(open_music_setup, outputs=img_setup_status, queue=False)
             img_preview_btn.click(preview_image, inputs=[img_source, img_variant, img_edge, img_tile], outputs=[img_comparison, img_full, img_report], concurrency_id="studio", concurrency_limit=1)
             img_mix_event = img_mix_btn.click(export_image_mix, inputs=[img_source, img_variant, img_edge, img_tile, img_fps, img_music, img_recursive, img_shuffle, img_seed, img_crossfade, img_fade, img_dust, img_duration_choice, img_output_dir],
                           outputs=[img_saved_path, img_report], concurrency_id="studio", concurrency_limit=1)
-            img_cancel_btn.click(runner.cancel, outputs=img_report, queue=False, cancels=[img_mix_event])
+            img_auto_event = img_auto_mix_btn.click(export_auto_image_mix, inputs=[img_source, img_variant, img_edge, img_tile, img_fps, img_prompt, img_music_count, img_crossfade, img_fade, img_dust, img_duration_choice, img_output_dir],
+                          outputs=[img_saved_path, img_report], concurrency_id="studio", concurrency_limit=1)
+            img_saved_event = img_saved_mix_btn.click(export_saved_image_mix, inputs=[img_source, img_variant, img_edge, img_tile, img_fps, img_crossfade, img_fade, img_dust, img_duration_choice, img_output_dir],
+                          outputs=[img_saved_path, img_report], concurrency_id="studio", concurrency_limit=1)
+            img_cancel_btn.click(cancel_image_mix, outputs=img_report, queue=False, cancels=[img_mix_event, img_auto_event, img_saved_event])
             img_folder_btn.click(pick_music, outputs=img_music, concurrency_id="folder-picker", concurrency_limit=1)
             img_output_folder_btn.click(pick_output, outputs=img_output_dir, concurrency_id="folder-picker", concurrency_limit=1)
             img_open_folder_btn.click(open_result, inputs=[img_saved_path, img_output_dir], outputs=img_report, queue=False)

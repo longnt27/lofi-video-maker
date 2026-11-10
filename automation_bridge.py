@@ -166,6 +166,11 @@ def create_app(home=ROOT/'cache/automation', port=7861, start_loop=True):
         engine.start(options.local_review, options.restart_failed)
         return {'ok':True}
 
+    @app.post('/api/music/start')
+    async def start_music(request: Request):
+        body = await request.json()
+        return {'run_id':engine.start_music(body.get('prompt'), body.get('count'))}
+
     @app.post('/api/continue-image')
     async def continue_image(request: Request):
         body=await request.json()

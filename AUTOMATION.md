@@ -53,12 +53,8 @@ run. Leaving the path empty uses the existing Excel web workflow described below
 - In **Xử lý video**, upload one native Flow sample, draw a tight watermark box,
   and use **Lưu vùng watermark cho tự động hóa**. Its normalized coordinates work
   across the same output layout. The bot does not guess a broad inpainting region.
-- Enter your Telegram bot token, chat ID and optional reviewer user ID in the
-  local automation settings. Start a conversation with the bot first. In a private
-  chat, the chat ID is also the default reviewer ID; groups require a reviewer ID.
-  Tokens are never returned by the status API or committed to Git.
 
-## Each approval cycle
+## Each unattended cycle
 
 1. Download a fresh workbook copy using the signed-in Excel browser UI.
 2. Read the existing `Kich_ban`, `Prompts` and `YouTube` sheets. Select the first
@@ -82,7 +78,8 @@ run. Leaving the path empty uses the existing Excel web workflow described below
 7. Reopen the cloud workbook, select the script sheet, verify the ID in column A,
    and check the corresponding column-I native checkbox only if currently FALSE.
    Verify TRUE and the saved state before reporting completion.
-   The scenario is marked complete directly upon successful Excel tick.
+   Studio cleans up the scenario and starts the next one automatically until
+   the selected batch count is reached. There is no approval pause.
 
 For a comprehensive step-by-step walkthrough in Vietnamese, see [AUTOMATION_GUIDE.md](AUTOMATION_GUIDE.md).
 
@@ -98,9 +95,8 @@ Chrome profiles are selectable by their display name/email in the automation UI;
 you do not need to edit code or remember the directory number. Each extension
 installation has a separate persistent identifier in that Chrome profile.
 
-1. Pause if the role is processing a browser task. At the Telegram review gate,
-   or while only the other role is busy, an idle role can be switched without
-   cancelling the completed output or invalidating its Telegram approval.
+1. Pause if the role is processing a browser task. While only the other role
+   is busy, an idle role can be switched without cancelling the completed output.
 2. Select the new Chrome profile by name. Save settings or click its Open Chrome
    button, which saves the selected profile before opening its extensions page.
 3. Load the same `extensions/main` or `extensions/gpt` folder in the new profile.
@@ -109,12 +105,12 @@ installation has a separate persistent identifier in that Chrome profile.
 4. Sign in to the needed services in the new profile. Make sure it can access
    the configured ChatGPT project and the generation services. Update the ChatGPT
    project URL if needed. Each scenario creates its own Flow project.
-   Continue the paused step, or approve the pending result on Telegram as normal.
+   Continue the paused step.
 
 Only the selected installation for each role receives/claims tasks. An old profile
 may remain open with the extension installed; its heartbeats cannot reactivate it.
 New installations do not take over automatically after the first pairing. Token,
-metadata, prompts, approval state and completed assets are preserved across switches.
+metadata, prompts and completed assets are preserved across switches.
 
 ### Background browser operation
 
@@ -135,7 +131,7 @@ own tab before it is renamed or copied. An origin-only referrer is not sufficien
 
 ## Failures and recovery
 
-The queue, task submissions and approval gate are durable local JSON. A restart
+The queue and task submissions are durable local JSON. A restart
 marks in-flight tasks interrupted; it never automatically replays a submitted
 generation. Resume can retry read/tick operations, reuse validated downloads and
 resume after rendering. A submitted generative request requires an explicit
@@ -155,11 +151,11 @@ materials available while a failed run can still be resumed.
 
 ## Validation status
 
-Local tests cover the approval boundary, wrong/replayed Telegram callbacks,
+Local tests cover unattended batch completion and legacy Telegram callbacks,
 profile-role isolation, no duplicate claims, restart behavior, workbook parsing,
 audio validation, single-prompt image transfer in a Chrome DOM fixture, safe/idempotent
 Excel-checkbox behavior in a DOM fixture, and existing media pipeline regressions.
 
 Authenticated live selectors for Excel, the project's ChatGPT composer, Google Flow
-and Flow Music still need an end-to-end account test after both extensions and
-Telegram are configured. Fixture tests do not prove those current website layouts.
+and Flow Music still need an end-to-end account test after both extensions are
+configured. Fixture tests do not prove those current website layouts.
